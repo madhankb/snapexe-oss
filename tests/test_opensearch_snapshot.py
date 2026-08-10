@@ -471,3 +471,56 @@ def test_run_snapshot_s3_registers_from_config(tmp_path, monkeypatch):
     cfg = oss.load_config("prod")
     assert cfg["repository"] == "snapexe-prod-repo-a1b2"  # stable name preserved
     assert cfg["bucket"] == "snapexe-prod-a1b2"
+
+
+def test_filter_restorable_excludes_system_keeps_ds():
+    snapshot_indices = ["logs", ".kibana", ".ds-metrics-000001", "orders"]
+    existing = []
+    assert oss.filter_restorable_indices(snapshot_indices, existing) == [
+        "logs", ".ds-metrics-000001", "orders"
+    ]
+
+
+def test_filter_restorable_excludes_existing():
+    snapshot_indices = ["logs", "orders", "events"]
+    existing = ["orders"]
+    assert oss.filter_restorable_indices(snapshot_indices, existing) == ["logs", "events"]
+
+
+def test_filter_restorable_preserves_order():
+    snapshot_indices = ["c", "a", "b"]
+    assert oss.filter_restorable_indices(snapshot_indices, []) == ["c", "a", "b"]
+
+
+def test_get_existing_indices_returns_names():
+    session = MagicMock()
+    session.get.return_value = _json_response([{"index": "logs"}, {"index": "orders"}])
+    assert oss.get_existing_indices(session, "https://h:9200") == ["logs", "orders"]
+
+
+def test_get_existing_indices_empty_on_error():
+    session = MagicMock()
+    session.get.return_value = _json_response({}, status=500)
+    assert oss.get_existing_indices(session, "https://h:9200") == []
+
+
+def test_get_snapshot_indices_returns_list():
+    session = MagicMock()
+    session.get.return_value = _json_response(
+        {"snapshots": [{"snapshot": "snap-1", "indices": ["logs", "orders"]}]}
+    )
+    assert oss.get_snapshot_indices(session, "https://h:9200", "repo-a", "snap-1") == [
+        "logs", "orders"
+    ]
+
+
+def test_get_snapshot_indices_empty_on_error():
+    session = MagicMock()
+    session.get.return_value = _json_response({}, status=404)
+    assert oss.get_snapshot_indices(session, "https://h:9200", "repo-a", "snap-1") == []
+
+
+def test_get_snapshot_indices_empty_when_no_snapshots():
+    session = MagicMock()
+    session.get.return_value = _json_response({"snapshots": []})
+    assert oss.get_snapshot_indices(session, "https://h:9200", "repo-a", "snap-1") == []

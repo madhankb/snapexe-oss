@@ -218,6 +218,48 @@ def create_snapshot_async(session, endpoint, repository, snapshot_name, indices)
         return False, None
 
 
+def get_existing_indices(session, endpoint):
+    try:
+        url = urljoin(endpoint + "/", "_cat/indices?format=json&h=index")
+        resp = session.get(url, verify=False, timeout=30)
+        if resp.status_code != 200:
+            logger.warning("Could not list existing indices: %s", resp.status_code)
+            return []
+        return [row.get("index", "") for row in resp.json()]
+    except Exception as exc:
+        logger.warning("Error getting existing indices: %s", exc)
+        return []
+
+
+def get_snapshot_indices(session, endpoint, repository, snapshot):
+    try:
+        url = urljoin(endpoint + "/", f"_snapshot/{repository}/{snapshot}")
+        resp = session.get(url, verify=False, timeout=30)
+        if resp.status_code != 200:
+            logger.error("Failed to query snapshot: %s %s", resp.status_code, resp.text)
+            return []
+        snapshots = resp.json().get("snapshots", [])
+        if not snapshots:
+            logger.error("No snapshot data found for %s/%s", repository, snapshot)
+            return []
+        return snapshots[0].get("indices", [])
+    except Exception as exc:
+        logger.error("Error getting snapshot indices: %s", exc)
+        return []
+
+
+def filter_restorable_indices(snapshot_indices, existing_indices):
+    existing = set(existing_indices)
+    restorable = []
+    for name in snapshot_indices:
+        if name.startswith(".") and not name.startswith(".ds-"):
+            continue
+        if name in existing:
+            continue
+        restorable.append(name)
+    return restorable
+
+
 def create_or_get_bucket(s3_client, bucket_name, region):
     from botocore.exceptions import ClientError
 
