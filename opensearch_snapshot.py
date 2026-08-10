@@ -1,4 +1,4 @@
-"""Snapshot tool for open-source OpenSearch - hot-index snapshot and status."""
+"""Snapshot tool for open-source OpenSearch - hot-index snapshot, status, and restore."""
 
 import argparse
 import getpass

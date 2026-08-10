@@ -661,3 +661,80 @@ def test_run_restore_dry_run_no_mutation(tmp_path, monkeypatch):
     assert rc == 0
     session.put.assert_not_called()
     session.post.assert_not_called()
+
+
+def test_run_restore_s3_registers_s3_body(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENSEARCH_USER", "admin")
+    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    oss.save_config("prod", {
+        "tag": "prod", "endpoint": "https://src:9200", "repo_type": "s3",
+        "bucket": "snapexe-prod-a1b2", "region": "us-east-1",
+        "repository": "snapexe-prod-repo-a1b2", "snapshot_name": "snapexe-prod-hotsnapshot-t",
+    })
+    session = MagicMock()
+    session.put.return_value = _json_response({"acknowledged": True})
+    session.get.side_effect = [
+        _json_response({"snapshots": [{"indices": ["logs"]}]}),
+        _json_response([]),
+    ]
+    session.post.return_value = _json_response({"accepted": True})
+    rc = oss.run_restore(_restore_args(), session_factory=lambda u, p: session)
+    assert rc == 0
+    body = session.put.call_args.kwargs["json"]
+    assert body["type"] == "s3"
+    assert body["settings"]["bucket"] == "snapexe-prod-a1b2"
+    assert body["settings"]["base_path"] == "snapexe-prod-repo-a1b2"
+    assert body["settings"]["region"] == "us-east-1"
+
+
+def test_run_restore_register_failure_exits_1(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENSEARCH_USER", "admin")
+    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    oss.save_config("prod", {
+        "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
+        "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
+        "snapshot_name": "snapexe-prod-hotsnapshot-t",
+    })
+    session = MagicMock()
+    session.put.return_value = _json_response({}, status=500)
+    rc = oss.run_restore(_restore_args(), session_factory=lambda u, p: session)
+    assert rc == 1
+    session.post.assert_not_called()
+
+
+def test_run_restore_snapshot_indices_empty_exits_1(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENSEARCH_USER", "admin")
+    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    oss.save_config("prod", {
+        "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
+        "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
+        "snapshot_name": "snapexe-prod-hotsnapshot-t",
+    })
+    session = MagicMock()
+    session.put.return_value = _json_response({"acknowledged": True})
+    session.get.return_value = _json_response({"snapshots": []})
+    rc = oss.run_restore(_restore_args(), session_factory=lambda u, p: session)
+    assert rc == 1
+
+
+def test_run_restore_post_failure_exits_1(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENSEARCH_USER", "admin")
+    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    oss.save_config("prod", {
+        "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
+        "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
+        "snapshot_name": "snapexe-prod-hotsnapshot-t",
+    })
+    session = MagicMock()
+    session.put.return_value = _json_response({"acknowledged": True})
+    session.get.side_effect = [
+        _json_response({"snapshots": [{"indices": ["logs"]}]}),
+        _json_response([]),
+    ]
+    session.post.return_value = _json_response({}, status=500)
+    rc = oss.run_restore(_restore_args(), session_factory=lambda u, p: session)
+    assert rc == 1
