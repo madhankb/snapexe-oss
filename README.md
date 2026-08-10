@@ -103,12 +103,12 @@ directory must be configured on the target.
 
 ```bash
 # Restore all non-existing, non-system indices from the saved snapshot
-python opensearch_snapshot.py restore \
+python restore.py \
   --tag prod \
   --endpoint https://target-cluster:9200
 
 # Restore only specific indices (restored verbatim, no existing-index filter)
-python opensearch_snapshot.py restore \
+python restore.py \
   --tag prod \
   --endpoint https://target-cluster:9200 \
   --indices "logs,orders"
