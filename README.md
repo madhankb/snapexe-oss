@@ -92,6 +92,38 @@ python opensearch_snapshot.py status --tag prod
 
 Reports overall percent-complete and per-index progress from the snapshot `_status` API.
 
+### Restore a snapshot into a target cluster
+
+Restore is fire-and-forget and always targets a cluster you name with `--endpoint`
+(typically a new/recovery cluster). The repository name, snapshot name, and backend
+settings are read from `snapexe-{tag}-config.json`, so the target must be able to read
+the same repository: for `s3`, install the keystore keys on the target nodes (see the
+`provision` output) and reload secure settings; for `fs`, the same `path.repo`
+directory must be configured on the target.
+
+```bash
+# Restore all non-existing, non-system indices from the saved snapshot
+python opensearch_snapshot.py restore \
+  --tag prod \
+  --endpoint https://target-cluster:9200
+
+# Restore only specific indices (restored verbatim, no existing-index filter)
+python opensearch_snapshot.py restore \
+  --tag prod \
+  --endpoint https://target-cluster:9200 \
+  --indices "logs,orders"
+```
+
+By default, restore skips indices that already exist on the target and system indices
+(names starting with `.`, except `.ds-*` datastream backing indices). With `--indices`,
+the named list is restored verbatim; if one already exists on the target, OpenSearch
+rejects that restore and the error is surfaced.
+
+Restore is asynchronous. Monitor recovery with:
+```bash
+curl -ku "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "https://target-cluster:9200/_cat/recovery?v"
+```
+
 ## Command reference
 
 `snapshot`:
@@ -126,6 +158,17 @@ Reports overall percent-complete and per-index progress from the snapshot `_stat
 | `--tag` | yes | Locates `snapexe-{tag}-config.json` |
 | `--user` | no | Username (or set `OPENSEARCH_USER`) |
 | `--endpoint` | no | Override the stored endpoint |
+| `--debug` | no | Debug logging |
+
+`restore`:
+
+| Flag | Required | Description |
+|---|---|---|
+| `--tag` | yes | Locates `snapexe-{tag}-config.json` |
+| `--endpoint` | yes | TARGET cluster URL to restore into |
+| `--user` | no | Username (or set `OPENSEARCH_USER`) |
+| `--indices` | no | Comma-separated indices to restore verbatim (skips discovery/filter) |
+| `--dry-run` | no | Preview without changes |
 | `--debug` | no | Debug logging |
 
 ## Development
