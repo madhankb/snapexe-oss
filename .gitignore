@@ -1,0 +1,7 @@
+.venv/
+.superpowers/
+__pycache__/
+*.pyc
+.pytest_cache/
+snapexe-*-config.json
+docs/superpowers/

@@ -1,0 +1,136 @@
+# OpenSearch Snapshot Tool (open-source OpenSearch)
+
+Takes an asynchronous snapshot of a self-managed OpenSearch cluster's hot indices
+into a filesystem (`fs`) or S3 (`s3`) repository, and reports snapshot progress.
+
+Built for open-source (self-managed) OpenSearch using its public snapshot APIs. It
+snapshots only regular ("hot") indices and skips searchable-snapshot indices, which
+cannot be re-snapshotted.
+
+## Requirements
+
+- Python 3.8+ (`pip install -r requirements.txt`)
+- OpenSearch admin credentials (security plugin enabled, HTTPS)
+- For `s3` mode: the `repository-s3` plugin installed on all nodes, plus AWS
+  credentials for this tool (standard boto3 credential chain)
+- For `fs` mode: a directory listed in `path.repo` in `opensearch.yml` on all nodes
+
+## Credentials
+
+OpenSearch credentials are never stored and there is no `--pass` flag. Provide them by:
+
+1. Environment variables (recommended for automation):
+   ```bash
+   export OPENSEARCH_USER=admin
+   export OPENSEARCH_PASSWORD='your-password'
+   ```
+2. Interactive prompt (the tool asks for the password without echoing it).
+
+AWS credentials for `s3` mode use the standard boto3 chain (env vars, `~/.aws`, etc.).
+
+## Searchable snapshots
+
+Indices whose store type is `remote_snapshot` (searchable snapshot indices) are
+detected via the index settings API and excluded automatically - OpenSearch cannot
+re-snapshot them.
+
+## Usage
+
+### Filesystem repository (local / on-prem)
+
+`path.repo` must include the target directory in `opensearch.yml`, for example:
+```yaml
+path.repo: ["/mnt/opensearch-snapshots"]
+```
+Then:
+```bash
+python opensearch_snapshot.py snapshot \
+  --tag prod \
+  --endpoint https://localhost:9200 \
+  --repo-type fs \
+  --repo-path /mnt/opensearch-snapshots
+```
+
+### S3 repository (two-phase)
+
+S3 is a two-phase flow because OpenSearch verifies an s3 repository at registration
+using keystore keys that do not exist yet the first time you run the tool. Phase 1
+mints those keys (without touching the cluster); after you install them, phase 2
+registers the repository and starts the snapshot.
+
+1. Provision the bucket + IAM user (no cluster calls):
+   ```bash
+   python opensearch_snapshot.py provision \
+     --tag prod \
+     --endpoint https://opensearch.example.com:9200 \
+     --region us-east-1
+   ```
+   This creates (or reuses) the bucket and an IAM user with scoped access keys, saves
+   the stable bucket/region/repository names to `snapexe-prod-config.json`, and prints
+   the `opensearch-keystore add` and `POST _nodes/reload_secure_settings` steps. The
+   repo type is always `s3` for `provision`.
+
+2. Install the printed keys in the keystore on every node and reload secure settings:
+   ```bash
+   POST _nodes/reload_secure_settings
+   ```
+
+3. Register the repository and take the snapshot (reads the provisioned config; no AWS
+   calls):
+   ```bash
+   python opensearch_snapshot.py snapshot \
+     --tag prod \
+     --endpoint https://opensearch.example.com:9200 \
+     --repo-type s3
+   ```
+
+### Check status
+
+```bash
+python opensearch_snapshot.py status --tag prod
+```
+
+Reports overall percent-complete and per-index progress from the snapshot `_status` API.
+
+## Command reference
+
+`snapshot`:
+
+| Flag | Required | Description |
+|---|---|---|
+| `--tag` | yes | Resource naming tag |
+| `--endpoint` | yes | Cluster URL, e.g. `https://host:9200` |
+| `--repo-type` | yes | `fs` or `s3` |
+| `--user` | no | Username (or set `OPENSEARCH_USER`) |
+| `--indices` | no | Comma-separated indices; skips discovery |
+| `--repository` | no | Custom repository name |
+| `--snapshot-name` | no | Custom snapshot name |
+| `--repo-path` | fs | Repository directory (must be in `path.repo`) |
+| `--dry-run` | no | Preview without changes |
+| `--debug` | no | Debug logging |
+
+`provision` (phase 1 of `s3`, always provisions an `s3` repository):
+
+| Flag | Required | Description |
+|---|---|---|
+| `--tag` | yes | Resource naming tag |
+| `--endpoint` | yes | Cluster URL, e.g. `https://host:9200` |
+| `--bucket` | no | Reuse an existing bucket |
+| `--region` | no | AWS region (defaults to the boto3 session region) |
+| `--debug` | no | Debug logging |
+
+`status`:
+
+| Flag | Required | Description |
+|---|---|---|
+| `--tag` | yes | Locates `snapexe-{tag}-config.json` |
+| `--user` | no | Username (or set `OPENSEARCH_USER`) |
+| `--endpoint` | no | Override the stored endpoint |
+| `--debug` | no | Debug logging |
+
+## Development
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests/ -v
+```
