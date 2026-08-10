@@ -260,6 +260,97 @@ def filter_restorable_indices(snapshot_indices, existing_indices):
     return restorable
 
 
+def restore_snapshot(session, endpoint, repository, snapshot, indices):
+    if not indices:
+        logger.error("No indices to restore")
+        return False
+    try:
+        url = urljoin(endpoint + "/", f"_snapshot/{repository}/{snapshot}/_restore")
+        body = {
+            "ignore_unavailable": True,
+            "include_global_state": False,
+            "indices": ",".join(indices),
+        }
+        resp = session.post(url, json=body, verify=False, timeout=60)
+        if resp.status_code == 200:
+            logger.info("Restore started: %s/%s", repository, snapshot)
+            return True
+        logger.error("Failed to restore: %s %s", resp.status_code, resp.text)
+        return False
+    except Exception as exc:
+        logger.error("Exception restoring snapshot: %s", exc)
+        return False
+
+
+def _restore_repo_body(config):
+    if config["repo_type"] == "fs":
+        return build_repository_body("fs", location=config["repo_path"])
+    return build_repository_body(
+        "s3",
+        bucket=config["bucket"],
+        base_path=config["repository"],
+        region=config.get("region"),
+    )
+
+
+def run_restore(args, *, session_factory=create_session):
+    try:
+        config = load_config(args.tag)
+    except FileNotFoundError as exc:
+        logger.error(str(exc))
+        return 2
+    try:
+        username, password = resolve_credentials(args.user)
+    except ValueError as exc:
+        logger.error(str(exc))
+        return 2
+
+    endpoint = normalize_endpoint(args.endpoint)
+    repository = config["repository"]
+    snapshot_name = config["snapshot_name"]
+    session = session_factory(username, password)
+
+    if args.dry_run:
+        logger.info(
+            "[DRY RUN] Would register %s repository %s on %s and restore snapshot %s",
+            config["repo_type"], repository, endpoint, snapshot_name,
+        )
+        return 0
+
+    body = _restore_repo_body(config)
+    if not register_repository(session, endpoint, repository, body):
+        logger.error(
+            "Repository registration failed on target. For s3, ensure keystore keys are "
+            "installed on the target nodes and secure settings reloaded; for fs, ensure "
+            "the path is in path.repo on the target and the node restarted."
+        )
+        return 1
+
+    if args.indices:
+        indices = [i.strip() for i in args.indices.split(",") if i.strip()]
+    else:
+        snapshot_indices = get_snapshot_indices(session, endpoint, repository, snapshot_name)
+        if not snapshot_indices:
+            logger.error("Could not retrieve indices from snapshot %s", snapshot_name)
+            return 1
+        existing = get_existing_indices(session, endpoint)
+        indices = filter_restorable_indices(snapshot_indices, existing)
+        if not indices:
+            print(
+                f"{len(snapshot_indices)} index(es) from snapshot already exist on target "
+                "(or are system indices) - nothing to restore"
+            )
+            return 0
+
+    if not restore_snapshot(session, endpoint, repository, snapshot_name, indices):
+        return 1
+
+    print(f"\nRestore started: {repository}/{snapshot_name} -> {endpoint}")
+    print(f"Indices: {len(indices)}")
+    print(f"Monitor recovery with:\n  GET {endpoint}/_cat/recovery?v\n")
+    return 0
+
+
 def create_or_get_bucket(s3_client, bucket_name, region):
     from botocore.exceptions import ClientError
 
@@ -385,6 +476,14 @@ def parse_arguments(argv=None):
     stat.add_argument("--user")
     stat.add_argument("--endpoint")
     stat.add_argument("--debug", action="store_true")
+
+    rest = sub.add_parser("restore", help="Restore a snapshot into a target cluster")
+    rest.add_argument("--tag", required=True)
+    rest.add_argument("--endpoint", required=True)
+    rest.add_argument("--user")
+    rest.add_argument("--indices")
+    rest.add_argument("--dry-run", dest="dry_run", action="store_true")
+    rest.add_argument("--debug", action="store_true")
 
     return parser.parse_args(argv)
 
@@ -582,6 +681,8 @@ def main(argv=None):
         return run_snapshot(args)
     if args.command == "status":
         return run_status(args)
+    if args.command == "restore":
+        return run_restore(args)
     return 2
 
 

@@ -524,3 +524,140 @@ def test_get_snapshot_indices_empty_when_no_snapshots():
     session = MagicMock()
     session.get.return_value = _json_response({"snapshots": []})
     assert oss.get_snapshot_indices(session, "https://h:9200", "repo-a", "snap-1") == []
+
+
+def test_restore_snapshot_success():
+    session = MagicMock()
+    session.post.return_value = _json_response({"accepted": True}, status=200)
+    ok = oss.restore_snapshot(session, "https://h:9200", "repo-a", "snap-1", ["logs", "orders"])
+    assert ok is True
+    sent = session.post.call_args.kwargs["json"]
+    assert sent["indices"] == "logs,orders"
+    assert sent["include_global_state"] is False
+    assert sent["ignore_unavailable"] is True
+
+
+def test_restore_snapshot_rejects_empty_indices():
+    session = MagicMock()
+    ok = oss.restore_snapshot(session, "https://h:9200", "repo-a", "snap-1", [])
+    assert ok is False
+    session.post.assert_not_called()
+
+
+def test_restore_snapshot_failure():
+    session = MagicMock()
+    session.post.return_value = _json_response({"error": "bad"}, status=500)
+    ok = oss.restore_snapshot(session, "https://h:9200", "repo-a", "snap-1", ["logs"])
+    assert ok is False
+
+
+def test_parse_restore_args():
+    ns = oss.parse_arguments(
+        ["restore", "--tag", "prod", "--endpoint", "https://target:9200", "--indices", "a,b"]
+    )
+    assert ns.command == "restore"
+    assert ns.tag == "prod"
+    assert ns.endpoint == "https://target:9200"
+    assert ns.indices == "a,b"
+
+
+def test_parse_restore_requires_endpoint():
+    with pytest.raises(SystemExit):
+        oss.parse_arguments(["restore", "--tag", "prod"])
+
+
+def _restore_args(**overrides):
+    import argparse
+    base = dict(
+        command="restore", tag="prod", endpoint="https://target:9200",
+        user="admin", indices=None, dry_run=False, debug=False,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def test_run_restore_missing_config_exits_2(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENSEARCH_USER", "admin")
+    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    rc = oss.run_restore(_restore_args(), session_factory=lambda u, p: MagicMock())
+    assert rc == 2
+
+
+def test_run_restore_default_filters_existing_and_system(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENSEARCH_USER", "admin")
+    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    oss.save_config("prod", {
+        "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
+        "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
+        "snapshot_name": "snapexe-prod-hotsnapshot-t",
+    })
+    session = MagicMock()
+    # register repo (PUT), then snapshot indices (GET), then existing indices (GET)
+    session.put.return_value = _json_response({"acknowledged": True})
+    session.get.side_effect = [
+        _json_response({"snapshots": [{"indices": ["logs", ".kibana", "orders"]}]}),
+        _json_response([{"index": "orders"}]),
+    ]
+    session.post.return_value = _json_response({"accepted": True})
+    rc = oss.run_restore(_restore_args(), session_factory=lambda u, p: session)
+    assert rc == 0
+    sent = session.post.call_args.kwargs["json"]
+    assert sent["indices"] == "logs"  # .kibana (system) and orders (existing) excluded
+
+
+def test_run_restore_explicit_indices_skip_filter(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENSEARCH_USER", "admin")
+    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    oss.save_config("prod", {
+        "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
+        "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
+        "snapshot_name": "snapexe-prod-hotsnapshot-t",
+    })
+    session = MagicMock()
+    session.put.return_value = _json_response({"acknowledged": True})
+    session.post.return_value = _json_response({"accepted": True})
+    rc = oss.run_restore(_restore_args(indices="logs,orders"), session_factory=lambda u, p: session)
+    assert rc == 0
+    # No discovery GETs when --indices given
+    session.get.assert_not_called()
+    sent = session.post.call_args.kwargs["json"]
+    assert sent["indices"] == "logs,orders"
+
+
+def test_run_restore_nothing_to_restore_exits_0(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENSEARCH_USER", "admin")
+    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    oss.save_config("prod", {
+        "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
+        "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
+        "snapshot_name": "snapexe-prod-hotsnapshot-t",
+    })
+    session = MagicMock()
+    session.put.return_value = _json_response({"acknowledged": True})
+    session.get.side_effect = [
+        _json_response({"snapshots": [{"indices": ["orders"]}]}),
+        _json_response([{"index": "orders"}]),
+    ]
+    rc = oss.run_restore(_restore_args(), session_factory=lambda u, p: session)
+    assert rc == 0
+    session.post.assert_not_called()
+
+
+def test_run_restore_dry_run_no_mutation(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENSEARCH_USER", "admin")
+    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    oss.save_config("prod", {
+        "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
+        "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
+        "snapshot_name": "snapexe-prod-hotsnapshot-t",
+    })
+    session = MagicMock()
+    rc = oss.run_restore(_restore_args(dry_run=True), session_factory=lambda u, p: session)
+    assert rc == 0
+    session.put.assert_not_called()
+    session.post.assert_not_called()
