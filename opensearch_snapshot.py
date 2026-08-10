@@ -4,7 +4,6 @@ Restore is a separate script - see restore.py.
 """
 
 import argparse
-import getpass
 import json
 import logging
 import os
@@ -16,6 +15,8 @@ from datetime import datetime
 from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CREDS_FILE = "snapexe-creds.json"
 
 
 def generate_bucket_name(tag, suffix):
@@ -136,23 +137,37 @@ def build_repository_body(repo_type, *, location=None, bucket=None, base_path=No
     raise ValueError(f"Unknown repository type: {repo_type}")
 
 
-def resolve_credentials(user_arg, *, allow_prompt=True):
-    username = user_arg or os.environ.get("OPENSEARCH_USER")
-    if not username and allow_prompt:
-        username = input("OpenSearch username: ").strip()
+def load_creds_file(path):
+    try:
+        with open(path, "r") as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Credentials file {path} not found. Create it (see snapexe-creds.example.json) "
+            "or pass --creds-file PATH."
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in credentials file {path}: {exc}")
+
+
+def apply_aws_creds_from_file(file_creds):
+    aws = file_creds.get("aws", {})
+    if aws.get("access_key_id"):
+        os.environ["AWS_ACCESS_KEY_ID"] = aws["access_key_id"]
+    if aws.get("secret_access_key"):
+        os.environ["AWS_SECRET_ACCESS_KEY"] = aws["secret_access_key"]
+    if aws.get("region"):
+        os.environ["AWS_DEFAULT_REGION"] = aws["region"]
+
+
+def resolve_credentials(file_creds):
+    opensearch = file_creds.get("opensearch", {})
+    username = opensearch.get("username")
+    password = opensearch.get("password")
     if not username:
-        raise ValueError(
-            "OpenSearch username not provided (set OPENSEARCH_USER or pass --user)"
-        )
-
-    password = os.environ.get("OPENSEARCH_PASSWORD")
-    if not password and allow_prompt:
-        password = getpass.getpass("OpenSearch password: ")
+        raise ValueError("Credentials file missing opensearch.username")
     if not password:
-        raise ValueError(
-            "OpenSearch password not provided (set OPENSEARCH_PASSWORD)"
-        )
-
+        raise ValueError("Credentials file missing opensearch.password")
     return username, password
 
 
@@ -326,7 +341,7 @@ def parse_arguments(argv=None):
     snap.add_argument("--tag", required=True)
     snap.add_argument("--endpoint", required=True)
     snap.add_argument("--repo-type", dest="repo_type", required=True, choices=["fs", "s3"])
-    snap.add_argument("--user")
+    snap.add_argument("--creds-file", dest="creds_file", default=DEFAULT_CREDS_FILE)
     snap.add_argument("--indices")
     snap.add_argument("--repository")
     snap.add_argument("--snapshot-name", dest="snapshot_name")
@@ -337,13 +352,14 @@ def parse_arguments(argv=None):
     prov = sub.add_parser("provision", help="Provision s3 bucket + IAM user (phase 1 of s3)")
     prov.add_argument("--tag", required=True)
     prov.add_argument("--endpoint", required=True)
+    prov.add_argument("--creds-file", dest="creds_file", default=DEFAULT_CREDS_FILE)
     prov.add_argument("--bucket")
     prov.add_argument("--region")
     prov.add_argument("--debug", action="store_true")
 
     stat = sub.add_parser("status", help="Report progress of the last snapshot")
     stat.add_argument("--tag", required=True)
-    stat.add_argument("--user")
+    stat.add_argument("--creds-file", dest="creds_file", default=DEFAULT_CREDS_FILE)
     stat.add_argument("--endpoint")
     stat.add_argument("--debug", action="store_true")
 
@@ -408,6 +424,12 @@ def _setup_repository(args, session, endpoint):
 
 
 def run_provision(args, *, boto3_module=None):
+    try:
+        file_creds = load_creds_file(args.creds_file)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        return 2
+    apply_aws_creds_from_file(file_creds)
     if boto3_module is None:
         import boto3 as boto3_module
     region = resolve_region(args.region, boto3_module)
@@ -439,8 +461,9 @@ def run_provision(args, *, boto3_module=None):
 
 def run_snapshot(args, *, session_factory=create_session):
     try:
-        username, password = resolve_credentials(args.user)
-    except ValueError as exc:
+        file_creds = load_creds_file(args.creds_file)
+        username, password = resolve_credentials(file_creds)
+    except (FileNotFoundError, ValueError) as exc:
         logger.error(str(exc))
         return 2
 
@@ -502,8 +525,9 @@ def run_status(args, *, session_factory=create_session):
         logger.error(str(exc))
         return 2
     try:
-        username, password = resolve_credentials(args.user)
-    except ValueError as exc:
+        file_creds = load_creds_file(args.creds_file)
+        username, password = resolve_credentials(file_creds)
+    except (FileNotFoundError, ValueError) as exc:
         logger.error(str(exc))
         return 2
 

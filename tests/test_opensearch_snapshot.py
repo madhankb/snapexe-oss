@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
@@ -150,30 +152,67 @@ def test_build_fs_repository_body_requires_location():
         oss.build_repository_body("fs", location=None)
 
 
-def test_resolve_credentials_from_env(monkeypatch):
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
-    assert oss.resolve_credentials(None) == ("admin", "secret")
+def _write_creds(tmp_path, data, name="snapexe-creds.json"):
+    p = tmp_path / name
+    p.write_text(json.dumps(data))
+    return str(p)
 
 
-def test_resolve_credentials_arg_overrides_env_user(monkeypatch):
-    monkeypatch.setenv("OPENSEARCH_USER", "envuser")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
-    assert oss.resolve_credentials("arguser") == ("arguser", "secret")
+def test_load_creds_file_reads_json(tmp_path):
+    path = _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "pw"}})
+    assert oss.load_creds_file(path) == {"opensearch": {"username": "admin", "password": "pw"}}
 
 
-def test_resolve_credentials_prompts_password(monkeypatch):
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.delenv("OPENSEARCH_PASSWORD", raising=False)
-    monkeypatch.setattr(oss.getpass, "getpass", lambda *a, **k: "prompted")
-    assert oss.resolve_credentials(None) == ("admin", "prompted")
+def test_load_creds_file_missing_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        oss.load_creds_file(str(tmp_path / "nope.json"))
 
 
-def test_resolve_credentials_no_prompt_raises(monkeypatch):
-    monkeypatch.delenv("OPENSEARCH_USER", raising=False)
-    monkeypatch.delenv("OPENSEARCH_PASSWORD", raising=False)
+def test_load_creds_file_invalid_json_raises(tmp_path):
+    p = tmp_path / "bad.json"
+    p.write_text("{not json")
     with pytest.raises(ValueError):
-        oss.resolve_credentials(None, allow_prompt=False)
+        oss.load_creds_file(str(p))
+
+
+def test_resolve_credentials_from_file():
+    fc = {"opensearch": {"username": "admin", "password": "secret"}}
+    assert oss.resolve_credentials(fc) == ("admin", "secret")
+
+
+def test_resolve_credentials_missing_section_raises():
+    with pytest.raises(ValueError):
+        oss.resolve_credentials({})
+
+
+def test_resolve_credentials_missing_password_raises():
+    with pytest.raises(ValueError):
+        oss.resolve_credentials({"opensearch": {"username": "admin"}})
+
+
+def test_apply_aws_creds_sets_env(monkeypatch):
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    oss.apply_aws_creds_from_file({"aws": {"access_key_id": "AK", "secret_access_key": "SK", "region": "us-east-1"}})
+    import os
+    assert os.environ["AWS_ACCESS_KEY_ID"] == "AK"
+    assert os.environ["AWS_SECRET_ACCESS_KEY"] == "SK"
+    assert os.environ["AWS_DEFAULT_REGION"] == "us-east-1"
+
+
+def test_apply_aws_creds_overwrites_existing(monkeypatch):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "OLD")
+    oss.apply_aws_creds_from_file({"aws": {"access_key_id": "NEW", "secret_access_key": "SK"}})
+    import os
+    assert os.environ["AWS_ACCESS_KEY_ID"] == "NEW"
+
+
+def test_apply_aws_creds_no_section_leaves_env(monkeypatch):
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    oss.apply_aws_creds_from_file({"opensearch": {"username": "a", "password": "b"}})
+    import os
+    assert "AWS_ACCESS_KEY_ID" not in os.environ
 
 
 def test_create_session_sets_basic_auth():
@@ -323,6 +362,17 @@ def test_parse_status_args():
     assert ns.tag == "prod"
 
 
+def test_parse_snapshot_creds_file_default():
+    ns = oss.parse_arguments(["snapshot", "--tag", "prod", "--endpoint", "https://h:9200", "--repo-type", "fs"])
+    assert ns.creds_file == "snapexe-creds.json"
+
+
+def test_parse_snapshot_rejects_user():
+    with pytest.raises(SystemExit):
+        oss.parse_arguments(["snapshot", "--tag", "prod", "--endpoint", "https://h:9200",
+                             "--repo-type", "fs", "--user", "admin"])
+
+
 def test_parse_snapshot_requires_repo_type():
     with pytest.raises(SystemExit):
         oss.parse_arguments(["snapshot", "--tag", "prod", "--endpoint", "https://h:9200"])
@@ -332,7 +382,8 @@ def _snapshot_args(tmp_path, **overrides):
     import argparse
     base = dict(
         command="snapshot", tag="prod", endpoint="localhost:9200", repo_type="fs",
-        user="admin", indices=None, repository=None, snapshot_name="snapexe-prod-hotsnapshot-t",
+        creds_file="snapexe-creds.json", indices=None, repository=None,
+        snapshot_name="snapexe-prod-hotsnapshot-t",
         repo_path="/mnt/snap", dry_run=False, debug=False,
     )
     base.update(overrides)
@@ -341,8 +392,9 @@ def _snapshot_args(tmp_path, **overrides):
 
 def test_run_snapshot_fs_happy_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    (tmp_path / "snapexe-creds.json").write_text(
+        '{"opensearch": {"username": "admin", "password": "secret"}}'
+    )
 
     session = MagicMock()
     # _cat/indices, then _all/_settings, then _snapshot/_status (proceed check)
@@ -365,8 +417,9 @@ def test_run_snapshot_fs_happy_path(tmp_path, monkeypatch):
 
 def test_run_snapshot_fs_dry_run_no_mutations(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    (tmp_path / "snapexe-creds.json").write_text(
+        '{"opensearch": {"username": "admin", "password": "secret"}}'
+    )
     session = MagicMock()
     rc = oss.run_snapshot(_snapshot_args(tmp_path, dry_run=True), session_factory=lambda u, p: session)
     assert rc == 0
@@ -375,8 +428,9 @@ def test_run_snapshot_fs_dry_run_no_mutations(tmp_path, monkeypatch):
 
 def test_run_status_reports_percent(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    (tmp_path / "snapexe-creds.json").write_text(
+        '{"opensearch": {"username": "admin", "password": "secret"}}'
+    )
     oss.save_config("prod", {
         "tag": "prod", "endpoint": "https://h:9200",
         "repository": "snapexe-prod-repo-a1b2", "snapshot_name": "snap-1",
@@ -389,7 +443,7 @@ def test_run_status_reports_percent(tmp_path, monkeypatch, capsys):
         }]
     })
     import argparse
-    args = argparse.Namespace(command="status", tag="prod", user="admin", endpoint=None, debug=False)
+    args = argparse.Namespace(command="status", tag="prod", creds_file="snapexe-creds.json", endpoint=None, debug=False)
     rc = oss.run_status(args, session_factory=lambda u, p: session)
     assert rc == 0
     assert "50%" in capsys.readouterr().out
@@ -408,16 +462,17 @@ def test_resolve_region_falls_back_to_session():
 def test_run_provision_creates_resources_and_saves_stable_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     import argparse
+    (tmp_path / "snapexe-creds.json").write_text(
+        '{"aws": {"access_key_id": "AK", "secret_access_key": "SK", "region": "us-east-1"}}'
+    )
     boto3_module = MagicMock()
     boto3_module.session.Session.return_value.region_name = "us-east-1"
     iam = boto3_module.client.return_value
     iam.create_access_key.return_value = {
         "AccessKey": {"AccessKeyId": "AKIA1", "SecretAccessKey": "sek1"}
     }
-    args = argparse.Namespace(
-        command="provision", tag="prod", endpoint="localhost:9200",
-        bucket=None, region=None, debug=False,
-    )
+    args = argparse.Namespace(command="provision", tag="prod", endpoint="localhost:9200",
+                              bucket=None, region=None, debug=False, creds_file="snapexe-creds.json")
     rc = oss.run_provision(args, boto3_module=boto3_module)
     assert rc == 0
     cfg = oss.load_config("prod")
@@ -429,12 +484,14 @@ def test_run_provision_creates_resources_and_saves_stable_config(tmp_path, monke
 
 def test_run_snapshot_s3_requires_provisioned_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    (tmp_path / "snapexe-creds.json").write_text(
+        '{"opensearch": {"username": "admin", "password": "secret"}}'
+    )
     import argparse
     args = argparse.Namespace(
         command="snapshot", tag="prod", endpoint="localhost:9200", repo_type="s3",
-        user="admin", indices=None, repository=None, snapshot_name="snapexe-prod-hotsnapshot-t",
+        creds_file="snapexe-creds.json", indices=None, repository=None,
+        snapshot_name="snapexe-prod-hotsnapshot-t",
         repo_path=None, dry_run=False, debug=False,
     )
     rc = oss.run_snapshot(args, session_factory=lambda u, p: MagicMock())
@@ -443,8 +500,9 @@ def test_run_snapshot_s3_requires_provisioned_config(tmp_path, monkeypatch):
 
 def test_run_snapshot_s3_registers_from_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    (tmp_path / "snapexe-creds.json").write_text(
+        '{"opensearch": {"username": "admin", "password": "secret"}}'
+    )
     oss.save_config("prod", {
         "tag": "prod", "endpoint": "https://h:9200", "repo_type": "s3",
         "bucket": "snapexe-prod-a1b2", "region": "us-east-1",
@@ -463,7 +521,8 @@ def test_run_snapshot_s3_registers_from_config(tmp_path, monkeypatch):
     import argparse
     args = argparse.Namespace(
         command="snapshot", tag="prod", endpoint="https://h:9200", repo_type="s3",
-        user="admin", indices=None, repository=None, snapshot_name="snapexe-prod-hotsnapshot-t",
+        creds_file="snapexe-creds.json", indices=None, repository=None,
+        snapshot_name="snapexe-prod-hotsnapshot-t",
         repo_path=None, dry_run=False, debug=False,
     )
     rc = oss.run_snapshot(args, session_factory=lambda u, p: session)
