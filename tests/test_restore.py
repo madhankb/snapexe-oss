@@ -18,11 +18,15 @@ def _write_config(tag, config):
         json.dump(config, handle, indent=2)
 
 
+def _write_creds(tmp_path, data):
+    (tmp_path / "snapexe-creds.json").write_text(__import__("json").dumps(data))
+
+
 def _restore_args(**overrides):
     import argparse
     base = dict(
         tag="prod", endpoint="https://target:9200",
-        user="admin", indices=None, dry_run=False, debug=False,
+        creds_file="snapexe-creds.json", indices=None, dry_run=False, debug=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -125,18 +129,46 @@ def test_parse_restore_requires_tag():
         restore.parse_arguments(["--endpoint", "https://target:9200"])
 
 
+def test_load_creds_file_reads_json(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text('{"opensearch": {"username": "admin", "password": "pw"}}')
+    assert restore.load_creds_file(str(p)) == {"opensearch": {"username": "admin", "password": "pw"}}
+
+
+def test_load_creds_file_missing_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        restore.load_creds_file(str(tmp_path / "nope.json"))
+
+
+def test_resolve_credentials_from_file():
+    assert restore.resolve_credentials({"opensearch": {"username": "admin", "password": "secret"}}) == ("admin", "secret")
+
+
+def test_resolve_credentials_missing_raises():
+    with pytest.raises(ValueError):
+        restore.resolve_credentials({})
+
+
+def test_parse_restore_creds_file_default():
+    ns = restore.parse_arguments(["--tag", "prod", "--endpoint", "https://target:9200"])
+    assert ns.creds_file == "snapexe-creds.json"
+
+
+def test_parse_restore_rejects_user():
+    with pytest.raises(SystemExit):
+        restore.parse_arguments(["--tag", "prod", "--endpoint", "https://target:9200", "--user", "admin"])
+
+
 def test_run_restore_missing_config_exits_2(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "secret"}})
     rc = restore.run_restore(_restore_args(), session_factory=lambda u, p: MagicMock())
     assert rc == 2
 
 
 def test_run_restore_default_filters_existing_and_system(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "secret"}})
     _write_config("prod", {
         "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
         "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
@@ -158,8 +190,7 @@ def test_run_restore_default_filters_existing_and_system(tmp_path, monkeypatch):
 
 def test_run_restore_explicit_indices_skip_filter(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "secret"}})
     _write_config("prod", {
         "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
         "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
@@ -177,8 +208,7 @@ def test_run_restore_explicit_indices_skip_filter(tmp_path, monkeypatch):
 
 def test_run_restore_nothing_to_restore_exits_0(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "secret"}})
     _write_config("prod", {
         "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
         "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
@@ -197,8 +227,7 @@ def test_run_restore_nothing_to_restore_exits_0(tmp_path, monkeypatch):
 
 def test_run_restore_dry_run_no_mutation(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "secret"}})
     _write_config("prod", {
         "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
         "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
@@ -213,8 +242,7 @@ def test_run_restore_dry_run_no_mutation(tmp_path, monkeypatch):
 
 def test_run_restore_s3_registers_s3_body(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "secret"}})
     _write_config("prod", {
         "tag": "prod", "endpoint": "https://src:9200", "repo_type": "s3",
         "bucket": "snapexe-prod-a1b2", "region": "us-east-1",
@@ -238,8 +266,7 @@ def test_run_restore_s3_registers_s3_body(tmp_path, monkeypatch):
 
 def test_run_restore_register_failure_exits_1(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "secret"}})
     _write_config("prod", {
         "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
         "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
@@ -254,8 +281,7 @@ def test_run_restore_register_failure_exits_1(tmp_path, monkeypatch):
 
 def test_run_restore_snapshot_indices_empty_exits_1(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "secret"}})
     _write_config("prod", {
         "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
         "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
@@ -270,8 +296,7 @@ def test_run_restore_snapshot_indices_empty_exits_1(tmp_path, monkeypatch):
 
 def test_run_restore_post_failure_exits_1(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("OPENSEARCH_USER", "admin")
-    monkeypatch.setenv("OPENSEARCH_PASSWORD", "secret")
+    _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "secret"}})
     _write_config("prod", {
         "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
         "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",

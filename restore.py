@@ -7,15 +7,15 @@ prints the _cat/recovery command to monitor progress.
 """
 
 import argparse
-import getpass
 import logging
-import os
 import sys
 import json
 import requests
 from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CREDS_FILE = "snapexe-creds.json"
 
 
 def normalize_endpoint(url):
@@ -29,23 +29,27 @@ def normalize_endpoint(url):
     return url
 
 
-def resolve_credentials(user_arg, *, allow_prompt=True):
-    username = user_arg or os.environ.get("OPENSEARCH_USER")
-    if not username and allow_prompt:
-        username = input("OpenSearch username: ").strip()
+def load_creds_file(path):
+    try:
+        with open(path, "r") as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Credentials file {path} not found. Create it (see snapexe-creds.example.json) "
+            "or pass --creds-file PATH."
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in credentials file {path}: {exc}")
+
+
+def resolve_credentials(file_creds):
+    opensearch = file_creds.get("opensearch", {})
+    username = opensearch.get("username")
+    password = opensearch.get("password")
     if not username:
-        raise ValueError(
-            "OpenSearch username not provided (set OPENSEARCH_USER or pass --user)"
-        )
-
-    password = os.environ.get("OPENSEARCH_PASSWORD")
-    if not password and allow_prompt:
-        password = getpass.getpass("OpenSearch password: ")
+        raise ValueError("Credentials file missing opensearch.username")
     if not password:
-        raise ValueError(
-            "OpenSearch password not provided (set OPENSEARCH_PASSWORD)"
-        )
-
+        raise ValueError("Credentials file missing opensearch.password")
     return username, password
 
 
@@ -181,8 +185,9 @@ def run_restore(args, *, session_factory=create_session):
         logger.error(str(exc))
         return 2
     try:
-        username, password = resolve_credentials(args.user)
-    except ValueError as exc:
+        file_creds = load_creds_file(args.creds_file)
+        username, password = resolve_credentials(file_creds)
+    except (FileNotFoundError, ValueError) as exc:
         logger.error(str(exc))
         return 2
 
@@ -238,7 +243,7 @@ def parse_arguments(argv=None):
     )
     parser.add_argument("--tag", required=True)
     parser.add_argument("--endpoint", required=True)
-    parser.add_argument("--user")
+    parser.add_argument("--creds-file", dest="creds_file", default=DEFAULT_CREDS_FILE)
     parser.add_argument("--indices")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
     parser.add_argument("--debug", action="store_true")
