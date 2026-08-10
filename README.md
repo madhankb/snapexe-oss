@@ -17,16 +17,25 @@ cannot be re-snapshotted.
 
 ## Credentials
 
-OpenSearch credentials are never stored and there is no `--pass` flag. Provide them by:
+All credentials are read from a JSON file (default `snapexe-creds.json` in the working
+directory; override with `--creds-file PATH`). Copy the template and fill it in:
 
-1. Environment variables (recommended for automation):
-   ```bash
-   export OPENSEARCH_USER=admin
-   export OPENSEARCH_PASSWORD='your-password'
-   ```
-2. Interactive prompt (the tool asks for the password without echoing it).
+```bash
+cp snapexe-creds.example.json snapexe-creds.json
+# edit snapexe-creds.json
+```
 
-AWS credentials for `s3` mode use the standard boto3 chain (env vars, `~/.aws`, etc.).
+```json
+{
+  "opensearch": { "username": "admin", "password": "..." },
+  "aws": { "access_key_id": "...", "secret_access_key": "...", "region": "us-east-1" }
+}
+```
+
+- `snapshot`, `status`, and `restore` use the `opensearch` section (cluster HTTPS auth).
+- `provision` uses the `aws` section (creates the S3 bucket + IAM user via boto3).
+- The file must exist; a command errors clearly if it (or a section it needs) is missing.
+- `snapexe-creds.json` is gitignored. Credentials are never logged or persisted by the tool.
 
 ## Searchable snapshots
 
@@ -133,7 +142,6 @@ curl -ku "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "https://target-cluster:9200/_c
 | `--tag` | yes | Resource naming tag |
 | `--endpoint` | yes | Cluster URL, e.g. `https://host:9200` |
 | `--repo-type` | yes | `fs` or `s3` |
-| `--user` | no | Username (or set `OPENSEARCH_USER`) |
 | `--indices` | no | Comma-separated indices; skips discovery |
 | `--repository` | no | Custom repository name |
 | `--snapshot-name` | no | Custom snapshot name |
@@ -156,7 +164,6 @@ curl -ku "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "https://target-cluster:9200/_c
 | Flag | Required | Description |
 |---|---|---|
 | `--tag` | yes | Locates `snapexe-{tag}-config.json` |
-| `--user` | no | Username (or set `OPENSEARCH_USER`) |
 | `--endpoint` | no | Override the stored endpoint |
 | `--debug` | no | Debug logging |
 
@@ -166,7 +173,6 @@ curl -ku "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "https://target-cluster:9200/_c
 |---|---|---|
 | `--tag` | yes | Locates `snapexe-{tag}-config.json` |
 | `--endpoint` | yes | TARGET cluster URL to restore into |
-| `--user` | no | Username (or set `OPENSEARCH_USER`) |
 | `--indices` | no | Comma-separated indices to restore verbatim (skips discovery/filter) |
 | `--dry-run` | no | Preview without changes |
 | `--debug` | no | Debug logging |

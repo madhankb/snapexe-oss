@@ -4,4 +4,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 snapexe-*-config.json
+snapexe-creds.json
 docs/superpowers/
+local-testing/

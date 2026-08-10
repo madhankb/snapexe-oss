@@ -1,0 +1,11 @@
+{
+  "opensearch": {
+    "username": "admin",
+    "password": "REPLACE_WITH_CLUSTER_PASSWORD"
+  },
+  "aws": {
+    "access_key_id": "REPLACE_WITH_AWS_ACCESS_KEY_ID",
+    "secret_access_key": "REPLACE_WITH_AWS_SECRET_ACCESS_KEY",
+    "region": "us-east-1"
+  }
+}
