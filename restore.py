@@ -32,7 +32,7 @@ def normalize_endpoint(url):
 def load_creds_file(path):
     try:
         with open(path, "r") as handle:
-            return json.load(handle)
+            data = json.load(handle)
     except FileNotFoundError:
         raise FileNotFoundError(
             f"Credentials file {path} not found. Create it (see snapexe-creds.example.json) "
@@ -40,6 +40,9 @@ def load_creds_file(path):
         )
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON in credentials file {path}: {exc}")
+    if not isinstance(data, dict):
+        raise ValueError(f"Credentials file {path} must contain a JSON object")
+    return data
 
 
 def resolve_credentials(file_creds):

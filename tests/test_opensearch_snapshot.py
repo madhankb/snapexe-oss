@@ -175,6 +175,13 @@ def test_load_creds_file_invalid_json_raises(tmp_path):
         oss.load_creds_file(str(p))
 
 
+def test_load_creds_file_rejects_non_dict(tmp_path):
+    p = tmp_path / "arr.json"
+    p.write_text("[]")
+    with pytest.raises(ValueError):
+        oss.load_creds_file(str(p))
+
+
 def test_resolve_credentials_from_file():
     fc = {"opensearch": {"username": "admin", "password": "secret"}}
     assert oss.resolve_credentials(fc) == ("admin", "secret")
@@ -203,6 +210,7 @@ def test_apply_aws_creds_sets_env(monkeypatch):
 
 def test_apply_aws_creds_overwrites_existing(monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "OLD")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "OLD")
     oss.apply_aws_creds_from_file({"aws": {"access_key_id": "NEW", "secret_access_key": "SK"}})
     import os
     assert os.environ["AWS_ACCESS_KEY_ID"] == "NEW"

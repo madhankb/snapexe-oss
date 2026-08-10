@@ -140,6 +140,20 @@ def test_load_creds_file_missing_raises(tmp_path):
         restore.load_creds_file(str(tmp_path / "nope.json"))
 
 
+def test_load_creds_file_invalid_json_raises(tmp_path):
+    p = tmp_path / "bad.json"
+    p.write_text("{not json")
+    with pytest.raises(ValueError):
+        restore.load_creds_file(str(p))
+
+
+def test_load_creds_file_rejects_non_dict(tmp_path):
+    p = tmp_path / "arr.json"
+    p.write_text("[]")
+    with pytest.raises(ValueError):
+        restore.load_creds_file(str(p))
+
+
 def test_resolve_credentials_from_file():
     assert restore.resolve_credentials({"opensearch": {"username": "admin", "password": "secret"}}) == ("admin", "secret")
 
