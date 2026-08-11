@@ -159,8 +159,8 @@ def _write_creds(tmp_path, data, name="snapexe-creds.json"):
 
 
 def test_load_creds_file_reads_json(tmp_path):
-    path = _write_creds(tmp_path, {"opensearch": {"username": "admin", "password": "pw"}})
-    assert oss.load_creds_file(path) == {"opensearch": {"username": "admin", "password": "pw"}}
+    path = _write_creds(tmp_path, {"opensearch_source": {"username": "admin", "password": "pw"}})
+    assert oss.load_creds_file(path) == {"opensearch_source": {"username": "admin", "password": "pw"}}
 
 
 def test_load_creds_file_missing_raises(tmp_path):
@@ -182,19 +182,26 @@ def test_load_creds_file_rejects_non_dict(tmp_path):
         oss.load_creds_file(str(p))
 
 
-def test_resolve_credentials_from_file():
-    fc = {"opensearch": {"username": "admin", "password": "secret"}}
-    assert oss.resolve_credentials(fc) == ("admin", "secret")
+def test_resolve_credentials_source():
+    fc = {"opensearch_source": {"username": "srcuser", "password": "srcpw"},
+          "opensearch_dest": {"username": "dstuser", "password": "dstpw"}}
+    assert oss.resolve_credentials(fc, "opensearch_source") == ("srcuser", "srcpw")
+
+
+def test_resolve_credentials_dest():
+    fc = {"opensearch_source": {"username": "srcuser", "password": "srcpw"},
+          "opensearch_dest": {"username": "dstuser", "password": "dstpw"}}
+    assert oss.resolve_credentials(fc, "opensearch_dest") == ("dstuser", "dstpw")
 
 
 def test_resolve_credentials_missing_section_raises():
     with pytest.raises(ValueError):
-        oss.resolve_credentials({})
+        oss.resolve_credentials({}, "opensearch_source")
 
 
 def test_resolve_credentials_missing_password_raises():
     with pytest.raises(ValueError):
-        oss.resolve_credentials({"opensearch": {"username": "admin"}})
+        oss.resolve_credentials({"opensearch_source": {"username": "admin"}}, "opensearch_source")
 
 
 def test_apply_aws_creds_sets_env(monkeypatch):
@@ -218,7 +225,7 @@ def test_apply_aws_creds_overwrites_existing(monkeypatch):
 
 def test_apply_aws_creds_no_section_leaves_env(monkeypatch):
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
-    oss.apply_aws_creds_from_file({"opensearch": {"username": "a", "password": "b"}})
+    oss.apply_aws_creds_from_file({"opensearch_source": {"username": "a", "password": "b"}})
     import os
     assert "AWS_ACCESS_KEY_ID" not in os.environ
 
@@ -401,7 +408,7 @@ def _snapshot_args(tmp_path, **overrides):
 def test_run_snapshot_fs_happy_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "snapexe-creds.json").write_text(
-        '{"opensearch": {"username": "admin", "password": "secret"}}'
+        '{"opensearch_source": {"username": "admin", "password": "secret"}}'
     )
 
     session = MagicMock()
@@ -426,7 +433,7 @@ def test_run_snapshot_fs_happy_path(tmp_path, monkeypatch):
 def test_run_snapshot_fs_dry_run_no_mutations(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "snapexe-creds.json").write_text(
-        '{"opensearch": {"username": "admin", "password": "secret"}}'
+        '{"opensearch_source": {"username": "admin", "password": "secret"}}'
     )
     session = MagicMock()
     rc = oss.run_snapshot(_snapshot_args(tmp_path, dry_run=True), session_factory=lambda u, p: session)
@@ -434,10 +441,29 @@ def test_run_snapshot_fs_dry_run_no_mutations(tmp_path, monkeypatch):
     session.put.assert_not_called()
 
 
+def test_run_snapshot_needs_only_source_block(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "snapexe-creds.json").write_text(
+        '{"opensearch_source": {"username": "admin", "password": "secret"}}'
+    )
+    session = MagicMock()
+    session.get.side_effect = [
+        _json_response([{"index": "logs"}]),
+        _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
+        _json_response({"snapshots": []}),
+    ]
+    session.put.side_effect = [
+        _json_response({"acknowledged": True}),
+        _json_response({"task": "task-1"}, status=202),
+    ]
+    rc = oss.run_snapshot(_snapshot_args(tmp_path), session_factory=lambda u, p: session)
+    assert rc == 0  # no opensearch_dest block present, snapshot still works
+
+
 def test_run_status_reports_percent(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "snapexe-creds.json").write_text(
-        '{"opensearch": {"username": "admin", "password": "secret"}}'
+        '{"opensearch_source": {"username": "admin", "password": "secret"}}'
     )
     oss.save_config("prod", {
         "tag": "prod", "endpoint": "https://h:9200",
@@ -493,7 +519,7 @@ def test_run_provision_creates_resources_and_saves_stable_config(tmp_path, monke
 def test_run_snapshot_s3_requires_provisioned_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "snapexe-creds.json").write_text(
-        '{"opensearch": {"username": "admin", "password": "secret"}}'
+        '{"opensearch_source": {"username": "admin", "password": "secret"}}'
     )
     import argparse
     args = argparse.Namespace(
@@ -509,7 +535,7 @@ def test_run_snapshot_s3_requires_provisioned_config(tmp_path, monkeypatch):
 def test_run_snapshot_s3_registers_from_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "snapexe-creds.json").write_text(
-        '{"opensearch": {"username": "admin", "password": "secret"}}'
+        '{"opensearch_source": {"username": "admin", "password": "secret"}}'
     )
     oss.save_config("prod", {
         "tag": "prod", "endpoint": "https://h:9200", "repo_type": "s3",

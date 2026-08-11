@@ -45,14 +45,14 @@ def load_creds_file(path):
     return data
 
 
-def resolve_credentials(file_creds):
-    opensearch = file_creds.get("opensearch", {})
-    username = opensearch.get("username")
-    password = opensearch.get("password")
+def resolve_credentials(file_creds, section):
+    creds = file_creds.get(section, {})
+    username = creds.get("username")
+    password = creds.get("password")
     if not username:
-        raise ValueError("Credentials file missing opensearch.username")
+        raise ValueError(f"Credentials file missing {section}.username")
     if not password:
-        raise ValueError("Credentials file missing opensearch.password")
+        raise ValueError(f"Credentials file missing {section}.password")
     return username, password
 
 
@@ -189,7 +189,7 @@ def run_restore(args, *, session_factory=create_session):
         return 2
     try:
         file_creds = load_creds_file(args.creds_file)
-        username, password = resolve_credentials(file_creds)
+        username, password = resolve_credentials(file_creds, "opensearch_dest")
     except (FileNotFoundError, ValueError) as exc:
         logger.error(str(exc))
         return 2
