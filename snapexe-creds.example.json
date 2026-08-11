@@ -1,7 +1,11 @@
 {
-  "opensearch": {
+  "opensearch_source": {
     "username": "admin",
-    "password": "REPLACE_WITH_CLUSTER_PASSWORD"
+    "password": "REPLACE_WITH_SOURCE_CLUSTER_PASSWORD"
+  },
+  "opensearch_dest": {
+    "username": "admin",
+    "password": "REPLACE_WITH_DEST_CLUSTER_PASSWORD"
   },
   "aws": {
     "access_key_id": "REPLACE_WITH_AWS_ACCESS_KEY_ID",

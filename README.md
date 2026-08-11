@@ -27,14 +27,18 @@ cp snapexe-creds.example.json snapexe-creds.json
 
 ```json
 {
-  "opensearch": { "username": "admin", "password": "..." },
+  "opensearch_source": { "username": "admin", "password": "..." },
+  "opensearch_dest":   { "username": "admin", "password": "..." },
   "aws": { "access_key_id": "...", "secret_access_key": "...", "region": "us-east-1" }
 }
 ```
 
-- `snapshot`, `status`, and `restore` use the `opensearch` section (cluster HTTPS auth).
+- `snapshot` and `status` use `opensearch_source` (the source cluster they read from).
+- `restore` uses `opensearch_dest` (the destination cluster it restores into).
 - `provision` uses the `aws` section (creates the S3 bucket + IAM user via boto3).
-- The file must exist; a command errors clearly if it (or a section it needs) is missing.
+- Each command needs only its own block: you can snapshot with just `opensearch_source`
+  filled in, and restore with just `opensearch_dest`.
+- The file must exist; a command errors clearly if the block it needs is missing.
 - `snapexe-creds.json` is gitignored. Credentials are never logged or persisted by the tool.
 
 ## Searchable snapshots
