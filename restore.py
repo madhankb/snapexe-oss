@@ -290,7 +290,11 @@ def run_restore(args, *, session_factory=create_session, boto3_module=None):
 
     print(f"\nRestore started: {repository}/{snapshot_name} -> {endpoint}")
     print(f"Indices: {len(indices)}")
-    print(f"Monitor recovery with:\n  GET {endpoint}/_cat/recovery?v\n")
+    print(
+        f"Monitor recovery with (reads the dest password from {args.creds_file}):\n"
+        f"  PW=$(python3 -c \"import json;print(json.load(open('{args.creds_file}'))['opensearch_dest']['password'])\")\n"
+        f"  curl -ku \"{username}:$PW\" \"{endpoint}/_cat/recovery?v\"\n"
+    )
     return 0
 
 
