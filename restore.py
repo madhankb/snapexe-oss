@@ -13,6 +13,13 @@ import json
 import requests
 from urllib.parse import urljoin, urlparse
 
+from opensearch_snapshot import (
+    apply_aws_creds_from_file,
+    create_iam_user_with_keys,
+    install_keystore_key,
+    reload_secure_settings,
+)
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CREDS_FILE = "snapexe-creds.json"
@@ -181,7 +188,42 @@ def _restore_repo_body(config):
     )
 
 
-def run_restore(args, *, session_factory=create_session):
+def ingest_dest_keystore(config, session, endpoint, container, boto3_module=None):
+    """Mint a fresh access key for the tag's IAM user, install it into the destination
+    node's keystore, and reload secure settings - the restore-side mirror of
+    opensearch_snapshot.py's --auto-provision keystore step. Returns True on success.
+
+    The secret minted at provision time is never persisted, so a new key is minted here
+    (IAM allows two per user; delete an old one if you hit the limit).
+    """
+    from botocore.exceptions import ClientError
+
+    if boto3_module is None:
+        import boto3 as boto3_module
+    tag = config.get("tag")
+    try:
+        keys = create_iam_user_with_keys(
+            boto3_module.client("iam"), f"snapexe-{tag}-user", config.get("bucket")
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "LimitExceeded":
+            logger.error(
+                "IAM user snapexe-%s-user already has the maximum number of access keys. "
+                "Delete an unused key and retry.", tag,
+            )
+        else:
+            logger.error("Failed to mint destination access key: %s", exc)
+        return False
+    try:
+        install_keystore_key(container, "s3.client.default.access_key", keys["access_key_id"])
+        install_keystore_key(container, "s3.client.default.secret_key", keys["secret_access_key"])
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        return False
+    return reload_secure_settings(session, endpoint)
+
+
+def run_restore(args, *, session_factory=create_session, boto3_module=None):
     try:
         config = load_config(args.tag)
     except FileNotFoundError as exc:
@@ -198,13 +240,28 @@ def run_restore(args, *, session_factory=create_session):
     repository = config["repository"]
     snapshot_name = config["snapshot_name"]
     session = session_factory(username, password)
+    install_container = getattr(args, "install_container", None)
 
     if args.dry_run:
+        if install_container:
+            logger.info(
+                "[DRY RUN] Would mint an access key for snapexe-%s-user, install it into "
+                "'%s', and reload secure settings", config.get("tag"), install_container,
+            )
         logger.info(
             "[DRY RUN] Would register %s repository %s on %s and restore snapshot %s",
             config["repo_type"], repository, endpoint, snapshot_name,
         )
         return 0
+
+    if install_container:
+        if config.get("repo_type") != "s3":
+            logger.error("--install-container only applies to s3 snapshots")
+            return 2
+        apply_aws_creds_from_file(file_creds)
+        if not ingest_dest_keystore(config, session, endpoint, install_container, boto3_module):
+            logger.error("Destination keystore ingest failed")
+            return 1
 
     body = _restore_repo_body(config)
     if not register_repository(session, endpoint, repository, body):
@@ -248,6 +305,9 @@ def parse_arguments(argv=None):
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--creds-file", dest="creds_file", default=DEFAULT_CREDS_FILE)
     parser.add_argument("--indices")
+    parser.add_argument("--install-container", dest="install_container",
+                        help="s3 only: mint a key for the tag's IAM user, install it into "
+                             "this destination container's keystore, and reload before restoring")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)

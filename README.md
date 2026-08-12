@@ -147,6 +147,19 @@ python restore.py \
   --indices "logs,orders"
 ```
 
+For a single-node s3 target reachable via `docker exec` (e.g. the local `os-dest`),
+`--install-container` performs the keystore step for you during the run: it mints a fresh
+access key for `snapexe-{tag}-user`, installs it into the named container's keystore,
+reloads secure settings, then registers the repo and restores. This creates a new IAM
+access key (IAM allows two per user, so delete an old one if you hit the limit).
+
+```bash
+python restore.py \
+  --tag prod \
+  --endpoint https://target-cluster:9200 \
+  --install-container os-dest
+```
+
 By default, restore skips indices that already exist on the target and system indices
 (names starting with `.`, except `.ds-*` datastream backing indices). With `--indices`,
 the named list is restored verbatim; if one already exists on the target, OpenSearch
@@ -202,6 +215,7 @@ curl -ku "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "https://target-cluster:9200/_c
 | `--tag` | yes | Locates `snapexe-{tag}-config.json` |
 | `--endpoint` | yes | TARGET cluster URL to restore into |
 | `--indices` | no | Comma-separated indices to restore verbatim (skips discovery/filter) |
+| `--install-container` | no | s3 only: mint a key, install it into this target container's keystore, and reload before restoring |
 | `--dry-run` | no | Preview without changes |
 | `--debug` | no | Debug logging |
 

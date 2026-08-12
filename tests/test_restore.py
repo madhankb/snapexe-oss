@@ -339,3 +339,81 @@ def test_run_restore_missing_dest_block_exits_2(tmp_path, monkeypatch):
     session = MagicMock()
     rc = restore.run_restore(_restore_args(), session_factory=lambda u, p: session)
     assert rc == 2  # opensearch_dest missing -> creds error
+
+
+def test_parse_restore_install_container():
+    ns = restore.parse_arguments(
+        ["--tag", "prod", "--endpoint", "https://t:9200", "--install-container", "os-dest"]
+    )
+    assert ns.install_container == "os-dest"
+
+
+def _write_s3_config(tag="prod"):
+    _write_config(tag, {
+        "tag": tag, "endpoint": "https://src:9200", "repo_type": "s3",
+        "bucket": "snapexe-prod-a1b2", "region": "us-east-1",
+        "repository": "snapexe-prod-repo-a1b2", "snapshot_name": "snapexe-prod-hotsnapshot-t",
+    })
+
+
+def test_run_restore_install_container_rejects_fs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_creds(tmp_path, {"opensearch_dest": {"username": "admin", "password": "secret"}})
+    _write_config("prod", {
+        "tag": "prod", "endpoint": "https://src:9200", "repo_type": "fs",
+        "repo_path": "/mnt/snap", "repository": "snapexe-prod-repo-a1b2",
+        "snapshot_name": "snapexe-prod-hotsnapshot-t",
+    })
+    rc = restore.run_restore(_restore_args(install_container="os-dest"),
+                             session_factory=lambda u, p: MagicMock())
+    assert rc == 2
+
+
+def test_run_restore_install_container_dry_run_no_aws(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_creds(tmp_path, {"opensearch_dest": {"username": "admin", "password": "secret"}})
+    _write_s3_config()
+    called = []
+    monkeypatch.setattr(restore, "create_iam_user_with_keys", lambda *a, **k: called.append(1))
+    session = MagicMock()
+    rc = restore.run_restore(_restore_args(install_container="os-dest", dry_run=True),
+                             session_factory=lambda u, p: session)
+    assert rc == 0
+    assert called == []  # dry run mints no keys
+    session.put.assert_not_called()
+    session.post.assert_not_called()
+
+
+def test_run_restore_install_container_ingests_keystore(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_creds(tmp_path, {"opensearch_dest": {"username": "admin", "password": "secret"}})
+    _write_s3_config()
+
+    installed = []
+    monkeypatch.setattr(restore, "install_keystore_key",
+                        lambda c, n, v: installed.append((c, n)))
+
+    boto3_module = MagicMock()
+    boto3_module.client.return_value.create_access_key.return_value = {
+        "AccessKey": {"AccessKeyId": "AKIA1", "SecretAccessKey": "sek1"}
+    }
+
+    session = MagicMock()
+    session.put.return_value = _json_response({"acknowledged": True})   # register repo
+    session.get.side_effect = [
+        _json_response({"snapshots": [{"indices": ["logs"]}]}),
+        _json_response([]),
+    ]
+    session.post.side_effect = [
+        _json_response({}, status=200),      # reload_secure_settings
+        _json_response({"accepted": True}),  # restore
+    ]
+
+    rc = restore.run_restore(_restore_args(install_container="os-dest"),
+                             session_factory=lambda u, p: session,
+                             boto3_module=boto3_module)
+    assert rc == 0
+    assert [n for _, n in installed] == [
+        "s3.client.default.access_key", "s3.client.default.secret_key",
+    ]
+    assert session.post.call_count == 2  # reload, then restore
