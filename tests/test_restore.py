@@ -266,6 +266,7 @@ def test_run_restore_s3_registers_s3_body(tmp_path, monkeypatch):
     session = MagicMock()
     session.put.return_value = _json_response({"acknowledged": True})
     session.get.side_effect = [
+        _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
         _json_response({"snapshots": [{"indices": ["logs"]}]}),
         _json_response([]),
     ]
@@ -401,6 +402,7 @@ def test_run_restore_install_container_ingests_keystore(tmp_path, monkeypatch):
     session = MagicMock()
     session.put.return_value = _json_response({"acknowledged": True})   # register repo
     session.get.side_effect = [
+        _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
         _json_response({"snapshots": [{"indices": ["logs"]}]}),
         _json_response([]),
     ]
@@ -417,3 +419,14 @@ def test_run_restore_install_container_ingests_keystore(tmp_path, monkeypatch):
         "s3.client.default.access_key", "s3.client.default.secret_key",
     ]
     assert session.post.call_count == 2  # reload, then restore
+
+
+def test_run_restore_s3_aborts_when_plugin_unavailable(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_creds(tmp_path, {"opensearch_dest": {"username": "admin", "password": "secret"}})
+    _write_s3_config()
+    monkeypatch.setattr(restore, "ensure_repository_s3", lambda s, e, c: False)
+    session = MagicMock()
+    rc = restore.run_restore(_restore_args(), session_factory=lambda u, p: session)
+    assert rc == 1
+    session.put.assert_not_called()  # never reached repo registration

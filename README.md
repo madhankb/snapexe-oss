@@ -148,10 +148,11 @@ python restore.py \
 ```
 
 For a single-node s3 target reachable via `docker exec` (e.g. the local `os-dest`),
-`--install-container` performs the keystore step for you during the run: it mints a fresh
-access key for `snapexe-{tag}-user`, installs it into the named container's keystore,
-reloads secure settings, then registers the repo and restores. This creates a new IAM
-access key (IAM allows two per user, so delete an old one if you hit the limit).
+`--install-container` provisions the destination during the run: it installs the
+`repository-s3` plugin if missing (restarting the node), mints a fresh access key for
+`snapexe-{tag}-user`, installs it into the node's keystore, reloads secure settings, then
+registers the repo and restores. This creates a new IAM access key (IAM allows two per
+user, so delete an old one if you hit the limit).
 
 ```bash
 python restore.py \
@@ -184,7 +185,7 @@ curl -ku "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "https://target-cluster:9200/_c
 | `--snapshot-name` | no | Custom snapshot name |
 | `--repo-path` | fs | Repository directory (must be in `path.repo`) |
 | `--auto-provision` | no | s3 only: provision + install keys + reload + snapshot in one command |
-| `--install-container` | with `--auto-provision` | Container to install keystore keys into via `docker exec` |
+| `--install-container` | with `--auto-provision` | Local container for node-local setup: auto-installs repository-s3 if missing, and (with `--auto-provision`) installs keystore keys via `docker exec` |
 | `--region` | no | AWS region for `--auto-provision` |
 | `--bucket` | no | Reuse an existing bucket for `--auto-provision` |
 | `--dry-run` | no | Preview without changes |
@@ -215,7 +216,7 @@ curl -ku "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "https://target-cluster:9200/_c
 | `--tag` | yes | Locates `snapexe-{tag}-config.json` |
 | `--endpoint` | yes | TARGET cluster URL to restore into |
 | `--indices` | no | Comma-separated indices to restore verbatim (skips discovery/filter) |
-| `--install-container` | no | s3 only: mint a key, install it into this target container's keystore, and reload before restoring |
+| `--install-container` | no | s3 only: install repository-s3 if missing, mint/install a keystore key, and reload before restoring |
 | `--dry-run` | no | Preview without changes |
 | `--debug` | no | Debug logging |
 

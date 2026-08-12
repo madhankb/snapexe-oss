@@ -20,6 +20,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from opensearch_snapshot import (
     apply_aws_creds_from_file,
     create_iam_user_with_keys,
+    ensure_repository_s3,
     install_keystore_key,
     reload_secure_settings,
 )
@@ -249,14 +250,19 @@ def run_restore(args, *, session_factory=create_session, boto3_module=None):
     if args.dry_run:
         if install_container:
             logger.info(
-                "[DRY RUN] Would mint an access key for snapexe-%s-user, install it into "
-                "'%s', and reload secure settings", config.get("tag"), install_container,
+                "[DRY RUN] Would validate/install repository-s3 in '%s', mint an access key "
+                "for snapexe-%s-user, install it, and reload secure settings",
+                install_container, config.get("tag"),
             )
         logger.info(
             "[DRY RUN] Would register %s repository %s on %s and restore snapshot %s",
             config["repo_type"], repository, endpoint, snapshot_name,
         )
         return 0
+
+    if config.get("repo_type") == "s3":
+        if not ensure_repository_s3(session, endpoint, install_container):
+            return 1
 
     if install_container:
         if config.get("repo_type") != "s3":
@@ -310,8 +316,9 @@ def parse_arguments(argv=None):
     parser.add_argument("--creds-file", dest="creds_file", default=DEFAULT_CREDS_FILE)
     parser.add_argument("--indices")
     parser.add_argument("--install-container", dest="install_container",
-                        help="s3 only: mint a key for the tag's IAM user, install it into "
-                             "this destination container's keystore, and reload before restoring")
+                        help="s3 only: on this destination container, install repository-s3 if "
+                             "missing, mint a key for the tag's IAM user, install it into the "
+                             "keystore, and reload - all before restoring")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
