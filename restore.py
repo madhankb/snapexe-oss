@@ -22,6 +22,7 @@ from opensearch_snapshot import (
     create_iam_user_with_keys,
     ensure_repository_s3,
     install_keystore_key,
+    register_repository,
     reload_secure_settings,
 )
 
@@ -102,20 +103,6 @@ def build_repository_body(repo_type, *, location=None, bucket=None, base_path=No
             settings["region"] = region
         return {"type": "s3", "settings": settings}
     raise ValueError(f"Unknown repository type: {repo_type}")
-
-
-def register_repository(session, endpoint, repository, body):
-    try:
-        url = urljoin(endpoint + "/", f"_snapshot/{repository}")
-        resp = session.put(url, json=body, verify=False, timeout=60)
-        if resp.status_code == 200 and resp.json().get("acknowledged"):
-            logger.info("Repository registered: %s", repository)
-            return True
-        logger.error("Failed to register repository: %s %s", resp.status_code, resp.text)
-        return False
-    except Exception as exc:
-        logger.error("Exception registering repository: %s", exc)
-        return False
 
 
 def get_existing_indices(session, endpoint):

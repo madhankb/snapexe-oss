@@ -706,3 +706,28 @@ def test_ensure_repository_s3_installs_and_restarts(monkeypatch):
     monkeypatch.setattr(oss, "wait_for_cluster", lambda s, e: True)
     assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", "os-source") is True
     assert calls == [("install", "os-source"), ("restart", "os-source")]
+
+
+def test_register_repository_retries_transient_key_error(monkeypatch):
+    monkeypatch.setattr(oss.time, "sleep", lambda _s: None)
+    session = MagicMock()
+    bad = MagicMock()
+    bad.status_code = 500
+    bad.text = "The AWS Access Key Id you provided does not exist in our records."
+    good = MagicMock()
+    good.status_code = 200
+    good.json.return_value = {"acknowledged": True}
+    session.put.side_effect = [bad, good]
+    assert oss.register_repository(session, "https://h:9200", "repo", {"type": "s3"}) is True
+    assert session.put.call_count == 2  # retried once after propagation error
+
+
+def test_register_repository_no_retry_on_other_error(monkeypatch):
+    monkeypatch.setattr(oss.time, "sleep", lambda _s: None)
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 500
+    resp.text = "repository already exists"
+    session.put.return_value = resp
+    assert oss.register_repository(session, "https://h:9200", "repo", {}) is False
+    assert session.put.call_count == 1  # non-transient -> no retry

@@ -209,18 +209,39 @@ def check_repository_snapshot_status(session, endpoint, repository):
         return True, []
 
 
-def register_repository(session, endpoint, repository, body):
-    try:
-        url = urljoin(endpoint + "/", f"_snapshot/{repository}")
-        resp = session.put(url, json=body, verify=False, timeout=60)
-        if resp.status_code == 200 and resp.json().get("acknowledged"):
-            logger.info("Repository registered: %s", repository)
-            return True
-        logger.error("Failed to register repository: %s %s", resp.status_code, resp.text)
-        return False
-    except Exception as exc:
-        logger.error("Exception registering repository: %s", exc)
-        return False
+# S3 verification errors that are transient because a just-minted IAM key has not
+# propagated yet (registration verifies by writing a test object to S3).
+_TRANSIENT_REPO_ERRORS = (
+    "does not exist in our records",  # InvalidAccessKeyId
+    "InvalidAccessKeyId",
+    "SignatureDoesNotMatch",
+)
+
+
+def register_repository(session, endpoint, repository, body, retries=4, delay=5):
+    """Register a snapshot repository, retrying transient S3 auth failures that occur
+    when a freshly minted IAM key has not propagated yet."""
+    url = urljoin(endpoint + "/", f"_snapshot/{repository}")
+    for attempt in range(retries + 1):
+        try:
+            resp = session.put(url, json=body, verify=False, timeout=60)
+            if resp.status_code == 200 and resp.json().get("acknowledged"):
+                logger.info("Repository registered: %s", repository)
+                return True
+            transient = any(t in resp.text for t in _TRANSIENT_REPO_ERRORS)
+            if transient and attempt < retries:
+                logger.warning(
+                    "Repository verification failed (attempt %d/%d) - likely a new IAM key "
+                    "still propagating; retrying in %ds", attempt + 1, retries + 1, delay,
+                )
+                time.sleep(delay)
+                continue
+            logger.error("Failed to register repository: %s %s", resp.status_code, resp.text)
+            return False
+        except Exception as exc:
+            logger.error("Exception registering repository: %s", exc)
+            return False
+    return False
 
 
 def create_snapshot_async(session, endpoint, repository, snapshot_name, indices):
