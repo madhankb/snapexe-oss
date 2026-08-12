@@ -615,7 +615,7 @@ def run_provision(args, *, boto3_module=None):
     print(keystore_instructions(keys["access_key_id"], keys["secret_access_key"]))
     print(f"\nProvisioned bucket {config['bucket']} and repository name {config['repository']}.")
     print("After installing the keys above and reloading secure settings, run:")
-    print(f"  python opensearch_snapshot.py snapshot --tag {args.tag} --repo-type s3 --endpoint {args.endpoint}\n")
+    print(f"  snapexe-oss snapshot --tag {args.tag} --repo-type s3 --endpoint {args.endpoint}\n")
     return 0
 
 
@@ -718,7 +718,7 @@ def run_snapshot(args, *, session_factory=create_session, boto3_module=None):
 
     print(f"\nSnapshot started: {repository}/{snapshot_name}")
     print(f"Indices: {len(indices)}")
-    print(f"Check progress with:\n  python opensearch_snapshot.py status --tag {args.tag}\n")
+    print(f"Check progress with:\n  snapexe-oss status --tag {args.tag}\n")
     return 0
 
 
