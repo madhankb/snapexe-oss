@@ -36,6 +36,7 @@ cp snapexe-creds.example.json snapexe-creds.json
 - `snapshot` and `status` use `opensearch_source` (the source cluster they read from).
 - `restore` uses `opensearch_dest` (the destination cluster it restores into).
 - `provision` uses the `aws` section (creates the S3 bucket + IAM user via boto3).
+- `delete-all` uses `opensearch_source` (repository/snapshot cleanup) and the `aws` section (S3 bucket + IAM cleanup).
 - Each command needs only its own block: you can snapshot with just `opensearch_source`
   filled in, and restore with just `opensearch_dest`.
 - The file must exist; a command errors clearly if the block it needs is missing.
@@ -171,6 +172,34 @@ Restore is asynchronous. Monitor recovery with:
 curl -ku "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "https://target-cluster:9200/_cat/recovery?v"
 ```
 
+### Delete all resources for a tag
+
+`delete_all.py` tears down everything the snapshot created for a tag, reading
+`snapexe-{tag}-config.json`: it deletes the repository snapshots and deregisters the
+repository, empties and deletes the S3 bucket, deletes the IAM user
+(`snapexe-{tag}-user`) with its access keys and inline policy, and removes the local
+config file. OpenSearch cleanup uses `opensearch_source`; AWS cleanup uses the `aws`
+block.
+
+It is destructive but safe: `--dry-run` previews with no calls, a `yes/no` confirmation
+is required by default (`--yes` skips it), deletes are idempotent ("already gone" counts
+as success), and the config file is kept if any step fails so you can re-run.
+
+```bash
+# Preview only (no changes)
+python delete_all.py --tag prod --dry-run
+
+# Delete (prompts for confirmation)
+python delete_all.py --tag prod
+
+# Delete without the prompt
+python delete_all.py --tag prod --yes
+```
+
+For `fs` snapshots it deregisters the repository and deletes the snapshots, but leaves
+the on-disk repository files on the nodes (no remote filesystem access); the S3/IAM
+steps are skipped.
+
 ## Command reference
 
 `snapshot`:
@@ -218,6 +247,15 @@ curl -ku "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "https://target-cluster:9200/_c
 | `--indices` | no | Comma-separated indices to restore verbatim (skips discovery/filter) |
 | `--install-container` | no | s3 only: install repository-s3 if missing, mint/install a keystore key, and reload before restoring |
 | `--dry-run` | no | Preview without changes |
+| `--debug` | no | Debug logging |
+
+`delete-all` (`delete_all.py`):
+
+| Flag | Required | Description |
+|---|---|---|
+| `--tag` | yes | Locates `snapexe-{tag}-config.json`; also names the IAM user/bucket to delete |
+| `--yes` | no | Skip the confirmation prompt |
+| `--dry-run` | no | Preview what would be deleted, no changes |
 | `--debug` | no | Debug logging |
 
 ## Development
