@@ -9,6 +9,7 @@ import logging
 import os
 import random
 import string
+import subprocess
 import sys
 import requests
 from datetime import datetime
@@ -311,6 +312,39 @@ def keystore_instructions(access_key_id, secret_access_key):
     )
 
 
+def reload_secure_settings(session, endpoint):
+    try:
+        url = urljoin(endpoint + "/", "_nodes/reload_secure_settings")
+        resp = session.post(url, verify=False, timeout=30)
+        if resp.status_code == 200:
+            logger.info("Reloaded secure settings")
+            return True
+        logger.error("reload_secure_settings failed: %s %s", resp.status_code, resp.text)
+        return False
+    except Exception as exc:
+        logger.error("Exception reloading secure settings: %s", exc)
+        return False
+
+
+def install_keystore_key(container, key_name, secret_value):
+    """Add one key to a node's keystore via `docker exec` (single-node local use).
+
+    The secret is fed on stdin, never as an argv, so it does not leak into `ps`.
+    """
+    result = subprocess.run(
+        ["docker", "exec", "-i", container,
+         "bin/opensearch-keystore", "add", "--stdin", "--force", key_name],
+        input=secret_value.encode(),
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to add {key_name} to '{container}' keystore: "
+            f"{result.stderr.decode().strip()}"
+        )
+    logger.info("Installed %s into '%s' keystore", key_name, container)
+
+
 def config_path(tag):
     return f"snapexe-{tag}-config.json"
 
@@ -349,6 +383,12 @@ def parse_arguments(argv=None):
     snap.add_argument("--repository")
     snap.add_argument("--snapshot-name", dest="snapshot_name")
     snap.add_argument("--repo-path", dest="repo_path")
+    snap.add_argument("--auto-provision", dest="auto_provision", action="store_true",
+                      help="s3 only: provision bucket+IAM, install keys, reload, then snapshot")
+    snap.add_argument("--install-container", dest="install_container",
+                      help="Container to install keystore keys into (required with --auto-provision)")
+    snap.add_argument("--region", help="AWS region for --auto-provision")
+    snap.add_argument("--bucket", help="Reuse an existing bucket for --auto-provision")
     snap.add_argument("--dry-run", dest="dry_run", action="store_true")
     snap.add_argument("--debug", action="store_true")
 
@@ -426,6 +466,27 @@ def _setup_repository(args, session, endpoint):
     return ok, repository
 
 
+def provision_backend(tag, endpoint, region_arg, bucket_arg, boto3_module):
+    """Create (or reuse) the S3 bucket + scoped IAM user. Returns (config, keys)."""
+    region = resolve_region(region_arg, boto3_module)
+    suffix = _random_suffix()
+    bucket = bucket_arg or generate_bucket_name(tag, suffix)
+    repository = generate_repository_name(tag, suffix)
+
+    create_or_get_bucket(boto3_module.client("s3", region_name=region), bucket, region)
+    keys = create_iam_user_with_keys(boto3_module.client("iam"), f"snapexe-{tag}-user", bucket)
+
+    config = {
+        "tag": tag,
+        "endpoint": normalize_endpoint(endpoint),
+        "repo_type": "s3",
+        "bucket": bucket,
+        "region": region,
+        "repository": repository,
+    }
+    return config, keys
+
+
 def run_provision(args, *, boto3_module=None):
     try:
         file_creds = load_creds_file(args.creds_file)
@@ -435,34 +496,52 @@ def run_provision(args, *, boto3_module=None):
     apply_aws_creds_from_file(file_creds)
     if boto3_module is None:
         import boto3 as boto3_module
-    region = resolve_region(args.region, boto3_module)
-    suffix = _random_suffix()
-    bucket = args.bucket or generate_bucket_name(args.tag, suffix)
-    repository = generate_repository_name(args.tag, suffix)
-
-    s3_client = boto3_module.client("s3", region_name=region)
-    iam_client = boto3_module.client("iam")
-    create_or_get_bucket(s3_client, bucket, region)
-    creds = create_iam_user_with_keys(iam_client, f"snapexe-{args.tag}-user", bucket)
-
-    config = {
-        "tag": args.tag,
-        "endpoint": normalize_endpoint(args.endpoint),
-        "repo_type": "s3",
-        "bucket": bucket,
-        "region": region,
-        "repository": repository,
-    }
+    config, keys = provision_backend(args.tag, args.endpoint, args.region, args.bucket, boto3_module)
     save_config(args.tag, config)
 
-    print(keystore_instructions(creds["access_key_id"], creds["secret_access_key"]))
-    print(f"\nProvisioned bucket {bucket} and repository name {repository}.")
+    print(keystore_instructions(keys["access_key_id"], keys["secret_access_key"]))
+    print(f"\nProvisioned bucket {config['bucket']} and repository name {config['repository']}.")
     print("After installing the keys above and reloading secure settings, run:")
     print(f"  python opensearch_snapshot.py snapshot --tag {args.tag} --repo-type s3 --endpoint {args.endpoint}\n")
     return 0
 
 
-def run_snapshot(args, *, session_factory=create_session):
+def _auto_provision(args, session, endpoint, boto3_module=None):
+    """Provision s3, install keys into a local node, and reload secure settings.
+
+    Convenience for single-node local clusters reachable via `docker exec`; writes
+    the config that `_setup_repository` then reads. Returns 0 on success, else a
+    non-zero exit code.
+    """
+    if args.repo_type != "s3":
+        logger.error("--auto-provision only applies to --repo-type s3")
+        return 2
+    container = getattr(args, "install_container", None)
+    if not container:
+        logger.error("--auto-provision requires --install-container CONTAINER")
+        return 2
+    if args.dry_run:
+        logger.error("--dry-run cannot be combined with --auto-provision")
+        return 2
+
+    if boto3_module is None:
+        import boto3 as boto3_module
+    config, keys = provision_backend(
+        args.tag, endpoint, getattr(args, "region", None), getattr(args, "bucket", None), boto3_module
+    )
+    save_config(args.tag, config)
+    try:
+        install_keystore_key(container, "s3.client.default.access_key", keys["access_key_id"])
+        install_keystore_key(container, "s3.client.default.secret_key", keys["secret_access_key"])
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        return 1
+    if not reload_secure_settings(session, endpoint):
+        return 1
+    return 0
+
+
+def run_snapshot(args, *, session_factory=create_session, boto3_module=None):
     try:
         file_creds = load_creds_file(args.creds_file)
         username, password = resolve_credentials(file_creds, "opensearch_source")
@@ -473,6 +552,11 @@ def run_snapshot(args, *, session_factory=create_session):
     endpoint = normalize_endpoint(args.endpoint)
     snapshot_name = args.snapshot_name or generate_snapshot_name(args.tag, _timestamp())
     session = session_factory(username, password)
+
+    if getattr(args, "auto_provision", False):
+        rc = _auto_provision(args, session, endpoint, boto3_module)
+        if rc != 0:
+            return rc
 
     ok, repository = _setup_repository(args, session, endpoint)
     if not ok:

@@ -97,6 +97,26 @@ registers the repository and starts the snapshot.
      --repo-type s3
    ```
 
+### S3 in one command (single-node, local `docker exec` access)
+
+For a single-node cluster reachable via `docker exec` (e.g. the local test setup),
+`--auto-provision` folds all three phases into one command: it provisions the bucket +
+IAM user, installs the minted keys into the named container's keystore, reloads secure
+settings, then takes the snapshot. This creates real AWS resources.
+
+```bash
+python opensearch_snapshot.py snapshot \
+  --tag local \
+  --endpoint https://localhost:9200 \
+  --repo-type s3 \
+  --auto-provision \
+  --install-container os-source
+```
+
+This is a convenience for the local single-node case only: multi-node clusters have no
+REST API for the keystore, so each node's keys must be installed by your own
+orchestration - use the three-step flow above there.
+
 ### Check status
 
 ```bash
@@ -150,6 +170,10 @@ curl -ku "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "https://target-cluster:9200/_c
 | `--repository` | no | Custom repository name |
 | `--snapshot-name` | no | Custom snapshot name |
 | `--repo-path` | fs | Repository directory (must be in `path.repo`) |
+| `--auto-provision` | no | s3 only: provision + install keys + reload + snapshot in one command |
+| `--install-container` | with `--auto-provision` | Container to install keystore keys into via `docker exec` |
+| `--region` | no | AWS region for `--auto-provision` |
+| `--bucket` | no | Reuse an existing bucket for `--auto-provision` |
 | `--dry-run` | no | Preview without changes |
 | `--debug` | no | Debug logging |
 

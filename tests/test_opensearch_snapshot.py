@@ -363,12 +363,12 @@ def test_parse_provision_args():
     assert ns.bucket == "my-bucket"
 
 
-def test_parse_snapshot_rejects_region():
-    with pytest.raises(SystemExit):
-        oss.parse_arguments(
-            ["snapshot", "--tag", "prod", "--endpoint", "https://h:9200",
-             "--repo-type", "s3", "--region", "us-east-1"]
-        )
+def test_parse_snapshot_accepts_region_for_auto_provision():
+    ns = oss.parse_arguments(
+        ["snapshot", "--tag", "prod", "--endpoint", "https://h:9200",
+         "--repo-type", "s3", "--region", "us-east-1"]
+    )
+    assert ns.region == "us-east-1"
 
 
 def test_parse_status_args():
@@ -564,3 +564,97 @@ def test_run_snapshot_s3_registers_from_config(tmp_path, monkeypatch):
     cfg = oss.load_config("prod")
     assert cfg["repository"] == "snapexe-prod-repo-a1b2"  # stable name preserved
     assert cfg["bucket"] == "snapexe-prod-a1b2"
+
+
+def test_parse_snapshot_auto_provision_flags():
+    ns = oss.parse_arguments([
+        "snapshot", "--tag", "local", "--endpoint", "https://h:9200", "--repo-type", "s3",
+        "--auto-provision", "--install-container", "os-source",
+    ])
+    assert ns.auto_provision is True
+    assert ns.install_container == "os-source"
+
+
+def _auto_provision_args(**overrides):
+    import argparse
+    base = dict(
+        command="snapshot", tag="local", endpoint="localhost:9200", repo_type="s3",
+        creds_file="snapexe-creds.json", indices=None, repository=None,
+        snapshot_name="snapexe-local-hotsnapshot-t", repo_path=None,
+        auto_provision=True, install_container="os-source", region=None, bucket=None,
+        dry_run=False, debug=False,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def _write_source_creds(tmp_path):
+    (tmp_path / "snapexe-creds.json").write_text(
+        '{"opensearch_source": {"username": "admin", "password": "secret"}}'
+    )
+
+
+def test_auto_provision_rejects_fs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_source_creds(tmp_path)
+    rc = oss.run_snapshot(_auto_provision_args(repo_type="fs"),
+                          session_factory=lambda u, p: MagicMock())
+    assert rc == 2
+
+
+def test_auto_provision_requires_install_container(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_source_creds(tmp_path)
+    rc = oss.run_snapshot(_auto_provision_args(install_container=None),
+                          session_factory=lambda u, p: MagicMock())
+    assert rc == 2
+
+
+def test_auto_provision_rejects_dry_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_source_creds(tmp_path)
+    rc = oss.run_snapshot(_auto_provision_args(dry_run=True),
+                          session_factory=lambda u, p: MagicMock())
+    assert rc == 2
+
+
+def test_auto_provision_happy_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_source_creds(tmp_path)
+
+    installed = []
+    monkeypatch.setattr(
+        oss, "install_keystore_key",
+        lambda container, name, value: installed.append((container, name)),
+    )
+
+    boto3_module = MagicMock()
+    boto3_module.session.Session.return_value.region_name = "us-east-1"
+    boto3_module.client.return_value.create_access_key.return_value = {
+        "AccessKey": {"AccessKeyId": "AKIA1", "SecretAccessKey": "sek1"}
+    }
+
+    session = MagicMock()
+    session.post.return_value = _json_response({}, status=200)  # reload_secure_settings
+    session.get.side_effect = [
+        _json_response([{"index": "logs"}]),
+        _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
+        _json_response({"snapshots": []}),
+    ]
+    session.put.side_effect = [
+        _json_response({"acknowledged": True}),          # register repo
+        _json_response({"task": "task-1"}, status=202),  # snapshot
+    ]
+
+    rc = oss.run_snapshot(_auto_provision_args(),
+                          session_factory=lambda u, p: session,
+                          boto3_module=boto3_module)
+    assert rc == 0
+    session.post.assert_called_once()  # reload happened
+    assert [name for _, name in installed] == [
+        "s3.client.default.access_key", "s3.client.default.secret_key",
+    ]
+    cfg = oss.load_config("local")
+    assert cfg["repo_type"] == "s3"
+    assert cfg["snapshot_name"] == "snapexe-local-hotsnapshot-t"
+    assert "secret_access_key" not in cfg
