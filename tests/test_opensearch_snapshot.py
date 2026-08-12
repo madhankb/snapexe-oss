@@ -544,6 +544,7 @@ def test_run_snapshot_s3_registers_from_config(tmp_path, monkeypatch):
     })
     session = MagicMock()
     session.get.side_effect = [
+        _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
         _json_response([{"index": "logs"}]),
         _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
         _json_response({"snapshots": []}),
@@ -637,6 +638,7 @@ def test_auto_provision_happy_path(tmp_path, monkeypatch):
     session = MagicMock()
     session.post.return_value = _json_response({}, status=200)  # reload_secure_settings
     session.get.side_effect = [
+        _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
         _json_response([{"index": "logs"}]),
         _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
         _json_response({"snapshots": []}),
@@ -658,3 +660,49 @@ def test_auto_provision_happy_path(tmp_path, monkeypatch):
     assert cfg["repo_type"] == "s3"
     assert cfg["snapshot_name"] == "snapexe-local-hotsnapshot-t"
     assert "secret_access_key" not in cfg
+
+
+def test_has_repository_s3_detects_present():
+    session = MagicMock()
+    session.get.return_value = _json_response(
+        [{"component": "repository-s3"}, {"component": "opensearch-sql"}]
+    )
+    assert oss.has_repository_s3(session, "https://h:9200") is True
+
+
+def test_has_repository_s3_absent():
+    session = MagicMock()
+    session.get.return_value = _json_response([{"component": "opensearch-sql"}])
+    assert oss.has_repository_s3(session, "https://h:9200") is False
+
+
+def test_has_repository_s3_unknown_on_error():
+    session = MagicMock()
+    session.get.return_value = _json_response({}, status=500)
+    assert oss.has_repository_s3(session, "https://h:9200") is None
+
+
+def test_ensure_repository_s3_present_is_noop(monkeypatch):
+    monkeypatch.setattr(oss, "has_repository_s3", lambda s, e: True)
+    assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", "os-source") is True
+
+
+def test_ensure_repository_s3_unknown_proceeds(monkeypatch):
+    monkeypatch.setattr(oss, "has_repository_s3", lambda s, e: None)
+    assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", None) is True
+
+
+def test_ensure_repository_s3_missing_no_container_fails(monkeypatch):
+    monkeypatch.setattr(oss, "has_repository_s3", lambda s, e: False)
+    assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", None) is False
+
+
+def test_ensure_repository_s3_installs_and_restarts(monkeypatch):
+    calls = []
+    states = iter([False, True])  # missing before, present after install+restart
+    monkeypatch.setattr(oss, "has_repository_s3", lambda s, e: next(states))
+    monkeypatch.setattr(oss, "install_repository_s3_plugin", lambda c: calls.append(("install", c)))
+    monkeypatch.setattr(oss, "restart_container", lambda c: calls.append(("restart", c)))
+    monkeypatch.setattr(oss, "wait_for_cluster", lambda s, e: True)
+    assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", "os-source") is True
+    assert calls == [("install", "os-source"), ("restart", "os-source")]

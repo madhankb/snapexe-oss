@@ -11,7 +11,11 @@ import logging
 import sys
 import json
 import requests
+import urllib3
 from urllib.parse import urljoin, urlparse
+
+# Local clusters use self-signed certs and the tool calls verify=False; silence the noise.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from opensearch_snapshot import (
     apply_aws_creds_from_file,

@@ -20,7 +20,11 @@ import logging
 import os
 import sys
 import requests
+import urllib3
 from urllib.parse import urljoin, urlparse
+
+# Local clusters use self-signed certs and the tool calls verify=False; silence the noise.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 

@@ -11,9 +11,14 @@ import random
 import string
 import subprocess
 import sys
+import time
 import requests
+import urllib3
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
+
+# Local clusters use self-signed certs and the tool calls verify=False; silence the noise.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +350,92 @@ def install_keystore_key(container, key_name, secret_value):
     logger.info("Installed %s into '%s' keystore", key_name, container)
 
 
+def has_repository_s3(session, endpoint):
+    """Best-effort check that the repository-s3 plugin is installed on the cluster.
+
+    Returns True/False, or None if the plugin list could not be retrieved (the caller
+    then just proceeds and lets registration surface any real error). On a multi-node
+    cluster this only confirms the plugin is present on at least one node.
+    """
+    try:
+        url = urljoin(endpoint + "/", "_cat/plugins?format=json&h=component")
+        resp = session.get(url, verify=False, timeout=30)
+        if resp.status_code != 200:
+            return None
+        return any(row.get("component") == "repository-s3" for row in resp.json())
+    except Exception as exc:
+        logger.warning("Could not check installed plugins: %s", exc)
+        return None
+
+
+def install_repository_s3_plugin(container):
+    """Install the repository-s3 plugin into a container (single-node local use)."""
+    result = subprocess.run(
+        ["docker", "exec", container,
+         "bin/opensearch-plugin", "install", "--batch", "repository-s3"],
+        capture_output=True,
+    )
+    stderr = result.stderr.decode().strip()
+    if result.returncode != 0 and "already exists" not in stderr.lower():
+        raise RuntimeError(f"Failed to install repository-s3 in '{container}': {stderr}")
+    logger.info("Installed repository-s3 plugin in '%s'", container)
+
+
+def restart_container(container):
+    """Restart a container so a newly installed plugin loads."""
+    result = subprocess.run(["docker", "restart", container], capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to restart '{container}': {result.stderr.decode().strip()}")
+    logger.info("Restarted container '%s'", container)
+
+
+def wait_for_cluster(session, endpoint, attempts=40, delay=3):
+    """Poll cluster health until it responds (used after a restart)."""
+    url = urljoin(endpoint + "/", "_cluster/health")
+    for _ in range(attempts):
+        try:
+            if session.get(url, verify=False, timeout=5).status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(delay)
+    return False
+
+
+def ensure_repository_s3(session, endpoint, container):
+    """Validate the repository-s3 plugin is installed; if missing and a container is
+    given, install it and restart the node. Returns True if s3 repositories can be used.
+    """
+    present = has_repository_s3(session, endpoint)
+    if present is None:
+        logger.warning("Could not verify installed plugins; proceeding")
+        return True
+    if present:
+        return True
+    if not container:
+        logger.error(
+            "The repository-s3 plugin is not installed on the cluster. Install it on every "
+            "node (bin/opensearch-plugin install repository-s3) and restart, then retry. For "
+            "a local single-node cluster, pass --install-container to do this automatically."
+        )
+        return False
+    logger.info("repository-s3 not installed; installing into '%s' and restarting...", container)
+    try:
+        install_repository_s3_plugin(container)
+        restart_container(container)
+    except RuntimeError as exc:
+        logger.error(str(exc))
+        return False
+    if not wait_for_cluster(session, endpoint):
+        logger.error("Cluster did not become ready after restart")
+        return False
+    if not has_repository_s3(session, endpoint):
+        logger.error("repository-s3 still not present after install + restart")
+        return False
+    logger.info("repository-s3 plugin is ready")
+    return True
+
+
 def config_path(tag):
     return f"snapexe-{tag}-config.json"
 
@@ -386,7 +477,8 @@ def parse_arguments(argv=None):
     snap.add_argument("--auto-provision", dest="auto_provision", action="store_true",
                       help="s3 only: provision bucket+IAM, install keys, reload, then snapshot")
     snap.add_argument("--install-container", dest="install_container",
-                      help="Container to install keystore keys into (required with --auto-provision)")
+                      help="Local container for node-local setup: keystore keys (with "
+                           "--auto-provision) and auto-installing repository-s3 if missing")
     snap.add_argument("--region", help="AWS region for --auto-provision")
     snap.add_argument("--bucket", help="Reuse an existing bucket for --auto-provision")
     snap.add_argument("--dry-run", dest="dry_run", action="store_true")
@@ -552,6 +644,10 @@ def run_snapshot(args, *, session_factory=create_session, boto3_module=None):
     endpoint = normalize_endpoint(args.endpoint)
     snapshot_name = args.snapshot_name or generate_snapshot_name(args.tag, _timestamp())
     session = session_factory(username, password)
+
+    if args.repo_type == "s3" and not args.dry_run:
+        if not ensure_repository_s3(session, endpoint, getattr(args, "install_container", None)):
+            return 1
 
     if getattr(args, "auto_provision", False):
         rc = _auto_provision(args, session, endpoint, boto3_module)
