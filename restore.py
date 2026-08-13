@@ -4,10 +4,15 @@ Standalone script (python restore.py --tag ...). It reads the config written by 
 snapshot tool (snapexe-{tag}-config.json), registers the repository on the target
 cluster named by --endpoint, and fires an asynchronous _restore. Fire-and-forget: it
 prints the _cat/recovery command to monitor progress.
+
+If the snapshot contains a data stream, restore routes it through the node's superadmin
+certificate (via --install-container) with include_global_state=true, since the security
+plugin rejects data-stream restore over basic auth.
 """
 
 import argparse
 import logging
+import subprocess
 import sys
 import json
 import requests
@@ -118,21 +123,27 @@ def get_existing_indices(session, endpoint):
         return []
 
 
-def get_snapshot_indices(session, endpoint, repository, snapshot):
+def get_snapshot_info(session, endpoint, repository, snapshot):
+    """Return the snapshot's metadata dict (has `indices` and `data_streams`), or None."""
     try:
         url = urljoin(endpoint + "/", f"_snapshot/{repository}/{snapshot}")
         resp = session.get(url, verify=False, timeout=30)
         if resp.status_code != 200:
             logger.error("Failed to query snapshot: %s %s", resp.status_code, resp.text)
-            return []
+            return None
         snapshots = resp.json().get("snapshots", [])
         if not snapshots:
             logger.error("No snapshot data found for %s/%s", repository, snapshot)
-            return []
-        return snapshots[0].get("indices", [])
+            return None
+        return snapshots[0]
     except Exception as exc:
-        logger.error("Error getting snapshot indices: %s", exc)
-        return []
+        logger.error("Error getting snapshot info: %s", exc)
+        return None
+
+
+def get_snapshot_indices(session, endpoint, repository, snapshot):
+    info = get_snapshot_info(session, endpoint, repository, snapshot)
+    return info.get("indices", []) if info else []
 
 
 def filter_restorable_indices(snapshot_indices, existing_indices):
@@ -215,6 +226,42 @@ def ingest_dest_keystore(config, session, endpoint, container, boto3_module=None
     return reload_secure_settings(session, endpoint)
 
 
+def restore_via_admin_cert(container, repository, snapshot, indices,
+                           cert="config/kirk.pem", key="config/kirk-key.pem"):
+    """Restore using the node's superadmin client certificate (docker exec + mTLS).
+
+    Data-stream restore is rejected over basic auth by the security plugin's
+    snapshot-restore write-privilege check; the admin cert (admin_dn) bypasses
+    authorization. Uses include_global_state=true so the data stream's template is
+    restored too. Synchronous. Single-node local use.
+    """
+    body = json.dumps({
+        "indices": ",".join(indices),
+        "include_global_state": True,
+        "ignore_unavailable": True,
+    })
+    url = f"https://localhost:9200/_snapshot/{repository}/{snapshot}/_restore?wait_for_completion=true"
+    result = subprocess.run(
+        ["docker", "exec", container, "curl", "-sk", "--cert", cert, "--key", key,
+         "-X", "POST", url, "-H", "Content-Type: application/json", "-d", body],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        logger.error("Admin-cert restore could not run: %s", (result.stderr or "").strip())
+        return False
+    out = (result.stdout or "").strip()
+    try:
+        payload = json.loads(out)
+    except ValueError:
+        logger.error("Admin-cert restore: unexpected response: %s", out[:300])
+        return False
+    if "snapshot" in payload:
+        logger.info("Data-stream restore completed via superadmin cert: %s/%s", repository, snapshot)
+        return True
+    logger.error("Admin-cert restore failed: %s", out[:400])
+    return False
+
+
 def run_restore(args, *, session_factory=create_session, boto3_module=None):
     try:
         config = load_config(args.tag)
@@ -269,27 +316,50 @@ def run_restore(args, *, session_factory=create_session, boto3_module=None):
         )
         return 1
 
+    info = get_snapshot_info(session, endpoint, repository, snapshot_name)
+    if info is None:
+        logger.error("Could not retrieve snapshot %s", snapshot_name)
+        return 1
+    data_streams = info.get("data_streams", [])
+    snapshot_indices = info.get("indices", [])
+
     if args.indices:
-        indices = [i.strip() for i in args.indices.split(",") if i.strip()]
+        targets = [i.strip() for i in args.indices.split(",") if i.strip()]
     else:
-        snapshot_indices = get_snapshot_indices(session, endpoint, repository, snapshot_name)
-        if not snapshot_indices:
-            logger.error("Could not retrieve indices from snapshot %s", snapshot_name)
-            return 1
         existing = get_existing_indices(session, endpoint)
-        indices = filter_restorable_indices(snapshot_indices, existing)
-        if not indices:
+        # Data streams are restored by name (they bring their backing indices); exclude
+        # raw .ds-* backing indices from the plain-index list.
+        regular = [i for i in snapshot_indices if not i.startswith(".ds-")]
+        targets = data_streams + filter_restorable_indices(regular, existing)
+        if not targets:
             print(
                 f"{len(snapshot_indices)} index(es) from snapshot already exist on target "
                 "(or are system indices) - nothing to restore"
             )
             return 0
 
-    if not restore_snapshot(session, endpoint, repository, snapshot_name, indices):
+    if data_streams:
+        # The security plugin rejects data-stream restore over basic auth, so use the
+        # node's superadmin certificate (via --install-container), with global state.
+        if not install_container:
+            logger.error(
+                "Snapshot contains data stream(s): %s. Restoring a data stream requires the "
+                "OpenSearch superadmin certificate (the security plugin rejects it over basic "
+                "auth). Re-run with --install-container <target-container> so the restore can "
+                "use the node's admin cert (config/kirk.pem).", ", ".join(data_streams),
+            )
+            return 1
+        if not restore_via_admin_cert(install_container, repository, snapshot_name, targets):
+            return 1
+        print(f"\nData-stream restore completed via superadmin cert: {repository}/{snapshot_name} -> {endpoint}")
+        print(f"Restored: {', '.join(targets)}")
+        return 0
+
+    if not restore_snapshot(session, endpoint, repository, snapshot_name, targets):
         return 1
 
     print(f"\nRestore started: {repository}/{snapshot_name} -> {endpoint}")
-    print(f"Indices: {len(indices)}")
+    print(f"Indices: {len(targets)}")
     print(
         f"Monitor recovery with (reads the dest password from {args.creds_file}):\n"
         f"  PW=$(python3 -c \"import json;print(json.load(open('{args.creds_file}'))['opensearch_dest']['password'])\")\n"

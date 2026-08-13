@@ -162,6 +162,15 @@ python restore.py \
   --install-container os-dest
 ```
 
+**Data streams:** if the snapshot contains a data stream, restore auto-detects it and
+restores it via the destination node's **superadmin certificate** (mTLS with the demo
+`config/kirk.pem`/`config/kirk-key.pem`) using `include_global_state: true`, because the
+security plugin rejects data-stream restore over basic auth (`no permissions for []`).
+This path requires `--install-container` (to reach the node's cert); without it, restore
+fails fast and tells you. Plain indices continue to restore over the normal basic-auth
+path. (Alternatively, set `plugins.security.check_snapshot_restore_write_privileges: false`
+on the target node + restart to allow data-stream restore over basic auth.)
+
 By default, restore skips indices that already exist on the target and system indices
 (names starting with `.`, except `.ds-*` datastream backing indices). With `--indices`,
 the named list is restored verbatim; if one already exists on the target, OpenSearch

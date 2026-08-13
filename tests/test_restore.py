@@ -213,12 +213,13 @@ def test_run_restore_explicit_indices_skip_filter(tmp_path, monkeypatch):
     })
     session = MagicMock()
     session.put.return_value = _json_response({"acknowledged": True})
+    # Even with --indices, restore peeks at the snapshot to detect data streams (none here).
+    session.get.return_value = _json_response({"snapshots": [{"indices": ["logs", "orders"]}]})
     session.post.return_value = _json_response({"accepted": True})
     rc = restore.run_restore(_restore_args(indices="logs,orders"), session_factory=lambda u, p: session)
     assert rc == 0
-    session.get.assert_not_called()
     sent = session.post.call_args.kwargs["json"]
-    assert sent["indices"] == "logs,orders"
+    assert sent["indices"] == "logs,orders"  # given list used verbatim, no filter
 
 
 def test_run_restore_nothing_to_restore_exits_0(tmp_path, monkeypatch):
@@ -430,3 +431,48 @@ def test_run_restore_s3_aborts_when_plugin_unavailable(tmp_path, monkeypatch):
     rc = restore.run_restore(_restore_args(), session_factory=lambda u, p: session)
     assert rc == 1
     session.put.assert_not_called()  # never reached repo registration
+
+
+def _ds_snapshot_get_responses():
+    return [
+        _json_response({"snapshots": [{
+            "indices": [".ds-logs-datastream-000001", ".ds-logs-datastream-000002"],
+            "data_streams": ["logs-datastream"],
+        }]}),
+        _json_response([]),  # existing indices on target
+    ]
+
+
+def test_run_restore_datastream_without_cert_aborts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_creds(tmp_path, {"opensearch_dest": {"username": "admin", "password": "secret"}})
+    _write_s3_config()
+    monkeypatch.setattr(restore, "ensure_repository_s3", lambda s, e, c: True)
+    basic, cert = [], []
+    monkeypatch.setattr(restore, "restore_snapshot", lambda *a, **k: basic.append(1) or True)
+    monkeypatch.setattr(restore, "restore_via_admin_cert", lambda *a, **k: cert.append(1) or True)
+    session = MagicMock()
+    session.put.return_value = _json_response({"acknowledged": True})
+    session.get.side_effect = _ds_snapshot_get_responses()
+    rc = restore.run_restore(_restore_args(), session_factory=lambda u, p: session)  # no --install-container
+    assert rc == 1  # data stream present but no cert reachable -> abort
+    assert basic == [] and cert == []  # neither restore path attempted
+
+
+def test_run_restore_datastream_uses_admin_cert(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _write_creds(tmp_path, {"opensearch_dest": {"username": "admin", "password": "secret"}})
+    _write_s3_config()
+    monkeypatch.setattr(restore, "ensure_repository_s3", lambda s, e, c: True)
+    monkeypatch.setattr(restore, "ingest_dest_keystore", lambda *a, **k: True)
+    basic, cert = [], []
+    monkeypatch.setattr(restore, "restore_snapshot", lambda *a, **k: basic.append(1) or True)
+    monkeypatch.setattr(restore, "restore_via_admin_cert",
+                        lambda container, repo, snap, targets, **k: cert.append((container, targets)) or True)
+    session = MagicMock()
+    session.put.return_value = _json_response({"acknowledged": True})
+    session.get.side_effect = _ds_snapshot_get_responses()
+    rc = restore.run_restore(_restore_args(install_container="os-dest"), session_factory=lambda u, p: session)
+    assert rc == 0
+    assert basic == []  # basic-auth path not used for a data stream
+    assert cert == [("os-dest", ["logs-datastream"])]  # restored the data stream by name via cert
