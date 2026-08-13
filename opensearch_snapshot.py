@@ -91,6 +91,67 @@ def discover_hot_indices(session, endpoint):
         return []
 
 
+def gather_searchable_remaps(session, endpoint):
+    """Return remap info for each searchable-snapshot (remote_snapshot) index on the cluster.
+
+    A searchable snapshot index is identified by index.store.type == remote_snapshot, and
+    OpenSearch tracks its source in internal index settings: index.searchable_snapshot.
+    {repository, snapshot_id.name, snapshot_id.uuid, index.id}. This reads those settings
+    (per the searchable-snapshot docs), resolves the backing repo's bucket/base_path/region,
+    and finds the source index name in the snapshot - everything a target cluster needs to
+    recreate the index off the SAME S3 backing snapshot (Approach A, no data copied):
+      {name, source_index, source_index_id, backing_repository, backing_snapshot,
+       backing_snapshot_uuid, bucket, base_path, region}
+    Best-effort: returns an empty list on any HTTP error.
+    """
+    try:
+        st_resp = session.get(
+            urljoin(endpoint + "/", "_all/_settings?flat_settings=true"), verify=False, timeout=30,
+        )
+        if st_resp.status_code != 200:
+            return []
+        remaps = []
+        for name, body in st_resp.json().items():
+            s = body.get("settings", {})
+            if s.get("index.store.type") != "remote_snapshot":
+                continue
+            backing_repo = s.get("index.searchable_snapshot.repository")
+            backing_snap = s.get("index.searchable_snapshot.snapshot_id.name")
+            if not backing_repo or not backing_snap:
+                continue
+            # look up the backing repository's bucket/base_path/region
+            repo_resp = session.get(
+                urljoin(endpoint + "/", f"_snapshot/{backing_repo}"), verify=False, timeout=30,
+            )
+            if repo_resp.status_code != 200:
+                continue
+            repo_settings = repo_resp.json().get(backing_repo, {}).get("settings", {})
+            # find the source index name inside the snapshot (ISM writes one index per snapshot)
+            snap_resp = session.get(
+                urljoin(endpoint + "/", f"_snapshot/{backing_repo}/{backing_snap}"), verify=False, timeout=30,
+            )
+            snap_indices = []
+            if snap_resp.status_code == 200:
+                snaps = snap_resp.json().get("snapshots", [])
+                if snaps:
+                    snap_indices = snaps[0].get("indices", [])
+            remaps.append({
+                "name": name,
+                "source_index": snap_indices[0] if len(snap_indices) == 1 else None,
+                "source_index_id": s.get("index.searchable_snapshot.index.id"),
+                "backing_repository": backing_repo,
+                "backing_snapshot": backing_snap,
+                "backing_snapshot_uuid": s.get("index.searchable_snapshot.snapshot_id.uuid"),
+                "bucket": repo_settings.get("bucket"),
+                "base_path": repo_settings.get("base_path"),
+                "region": repo_settings.get("region"),
+            })
+        return remaps
+    except Exception as exc:
+        logger.warning("Could not gather searchable remaps: %s", exc)
+        return []
+
+
 def _percent(done, total, state):
     if total > 0:
         return round(100 * done / total)
@@ -719,10 +780,18 @@ def run_snapshot(args, *, session_factory=create_session, boto3_module=None):
         "repository": repository,
         "snapshot_name": snapshot_name,
     })
+    # Searchable indices aren't in the snapshot (their data is already in S3); record
+    # their backing snapshot/repo so restore can re-attach them via Approach A on dest.
+    remaps = gather_searchable_remaps(session, endpoint)
+    if remaps:
+        config["searchable_snapshots"] = remaps
+        logger.info("Recorded %d searchable-snapshot remap(s) for restore", len(remaps))
     save_config(args.tag, config)
 
     print(f"\nSnapshot started: {repository}/{snapshot_name}")
     print(f"Indices: {len(indices)}")
+    if remaps:
+        print(f"Searchable remaps recorded: {len(remaps)}")
     print(f"Check progress with:\n  snapexe-oss status --tag {args.tag}\n")
     return 0
 

@@ -734,3 +734,45 @@ def test_register_repository_no_retry_on_other_error(monkeypatch):
     session.put.return_value = resp
     assert oss.register_repository(session, "https://h:9200", "repo", {}) is False
     assert session.put.call_count == 1  # non-transient -> no retry
+
+
+def test_gather_searchable_remaps_returns_backing_pointers():
+    session = MagicMock()
+    settings_body = {
+        "logs-searchable": {"settings": {
+            "index.store.type": "remote_snapshot",
+            "index.searchable_snapshot.repository": "snapexe-ss-repo-abcd",
+            "index.searchable_snapshot.snapshot_id.name": "ss-snap",
+            "index.searchable_snapshot.snapshot_id.uuid": "snapuuid123",
+            "index.searchable_snapshot.index.id": "idxid456",
+        }},
+        "logs": {"settings": {"index.store.type": "fs"}},  # regular index - excluded
+    }
+    repo_body = {"snapexe-ss-repo-abcd": {"type": "s3", "settings": {
+        "bucket": "snapexe-ss-abcd", "base_path": "snapexe-ss-repo-abcd", "region": "us-west-2",
+    }}}
+    snap_body = {"snapshots": [{"snapshot": "ss-snap", "indices": ["logs"]}]}
+    session.get.side_effect = [
+        _json_response(settings_body),  # _all/_settings
+        _json_response(repo_body),      # _snapshot/{repo}
+        _json_response(snap_body),      # _snapshot/{repo}/{snap}
+    ]
+    remaps = oss.gather_searchable_remaps(session, "https://h:9200")
+    assert len(remaps) == 1
+    m = remaps[0]
+    assert m["name"] == "logs-searchable"
+    assert m["source_index"] == "logs"
+    assert m["backing_repository"] == "snapexe-ss-repo-abcd"
+    assert m["backing_snapshot"] == "ss-snap"
+    assert m["backing_snapshot_uuid"] == "snapuuid123"
+    assert m["source_index_id"] == "idxid456"
+    assert m["bucket"] == "snapexe-ss-abcd"
+    assert m["region"] == "us-west-2"
+
+
+def test_gather_searchable_remaps_empty_when_none():
+    session = MagicMock()
+    session.get.return_value = _json_response(
+        {"logs": {"settings": {"index.store.type": "fs"}}}
+    )
+    assert oss.gather_searchable_remaps(session, "https://h:9200") == []

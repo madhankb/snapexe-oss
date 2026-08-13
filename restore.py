@@ -8,6 +8,12 @@ prints the _cat/recovery command to monitor progress.
 If the snapshot contains a data stream, restore routes it through the node's superadmin
 certificate (via --install-container) with include_global_state=true, since the security
 plugin rejects data-stream restore over basic auth.
+
+If the source cluster had searchable-snapshot (remote_snapshot) indices, the snapshot
+config records their backing (repo, snapshot, bucket). Restore then recreates each one on
+the target by registering the same backing repo on dest and issuing a remote_snapshot
+restore - Approach A: dest reads the SAME S3 objects, no data copied. Provide the target
+container(s) via --dest-containers (defaults to --install-container).
 """
 
 import argparse
@@ -24,6 +30,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from opensearch_snapshot import (
     apply_aws_creds_from_file,
+    build_repository_body,
     create_iam_user_with_keys,
     ensure_repository_s3,
     install_keystore_key,
@@ -262,6 +269,102 @@ def restore_via_admin_cert(container, repository, snapshot, indices,
     return False
 
 
+def _ensure_backing_repo(m, session, endpoint, dest_containers, boto3_module):
+    """Register the backing repo on the target for a searchable remap. Tries the dest's
+    existing S3 credentials first; only mints+installs a key for the backing IAM user if
+    that fails (avoids needless minting and the 2-key IAM limit). Returns True on success.
+    """
+    from botocore.exceptions import ClientError
+
+    body = build_repository_body(
+        "s3", bucket=m["bucket"], base_path=m.get("base_path"), region=m.get("region"),
+    )
+    backing_repo = m["backing_repository"]
+    # 1. Probe: register with whatever credentials the destination already has (no retry).
+    if register_repository(session, endpoint, backing_repo, body, retries=0):
+        return True
+    # 2. Not accessible - need to install the backing bucket's key on the dest node(s).
+    if not dest_containers:
+        logger.error(
+            "Backing repo '%s' is not accessible with the destination's current credentials "
+            "and no --dest-containers/--install-container was given to install its key.",
+            backing_repo,
+        )
+        return False
+    # Backing IAM user follows snapexe-{tag}-user, with tag embedded in the repo name
+    # (generate_repository_name -> snapexe-{tag}-repo-{suffix}).
+    parts = backing_repo.split("-repo-")
+    if len(parts) != 2 or not parts[0].startswith("snapexe-"):
+        logger.error("Cannot infer IAM user from backing repo name '%s'", backing_repo)
+        return False
+    user_name = f"snapexe-{parts[0][len('snapexe-'):]}-user"
+    if boto3_module is None:
+        import boto3 as boto3_module
+    try:
+        keys = create_iam_user_with_keys(boto3_module.client("iam"), user_name, m["bucket"])
+    except ClientError as exc:
+        logger.error("Could not mint key for backing user %s: %s", user_name, exc)
+        return False
+    try:
+        for c in dest_containers:
+            install_keystore_key(c, "s3.client.default.access_key", keys["access_key_id"])
+            install_keystore_key(c, "s3.client.default.secret_key", keys["secret_access_key"])
+    except RuntimeError as exc:
+        logger.error("Keystore install failed for backing repo '%s': %s", backing_repo, exc)
+        return False
+    if not reload_secure_settings(session, endpoint):
+        return False
+    return register_repository(session, endpoint, backing_repo, body)
+
+
+def remap_searchable_snapshots(remaps, session, endpoint, dest_containers,
+                               existing_indices, boto3_module=None):
+    """Recreate each searchable-snapshot index on the target by pointing at its backing
+    (repo, snapshot) in S3 - Approach A: dest shares the same bucket, zero data copied.
+
+    For each remap: ensure the backing repo is registered on dest (reusing existing dest
+    credentials, or minting+installing the backing IAM user's key if needed), then
+    remote_snapshot-restore the source index (renamed back to the searchable index name).
+
+    Skips remaps whose target name already exists. Returns True if every remap succeeded
+    or was correctly skipped.
+    """
+    if not remaps:
+        return True
+    existing = set(existing_indices)
+    all_ok = True
+    for m in remaps:
+        target = m["name"]
+        if target in existing:
+            logger.info("Searchable remap '%s' already exists on target - skipping", target)
+            continue
+        if any(not m.get(k) for k in ("backing_repository", "backing_snapshot", "source_index", "bucket")):
+            logger.error("Searchable remap for '%s' missing required fields; skipping", target)
+            all_ok = False
+            continue
+        if not _ensure_backing_repo(m, session, endpoint, dest_containers, boto3_module):
+            all_ok = False
+            continue
+        url = urljoin(
+            endpoint + "/",
+            f"_snapshot/{m['backing_repository']}/{m['backing_snapshot']}/_restore?wait_for_completion=true",
+        )
+        rb = {
+            "storage_type": "remote_snapshot",
+            "indices": m["source_index"],
+            "rename_pattern": m["source_index"],
+            "rename_replacement": target,
+        }
+        r = session.post(url, json=rb, verify=False, timeout=180)
+        if r.status_code == 200 and "snapshot" in r.json():
+            logger.info("Searchable remap complete: %s -> %s (from %s/%s)",
+                        m["source_index"], target, m["backing_repository"], m["backing_snapshot"])
+        else:
+            logger.error("Searchable remap failed for '%s': %s %s", target, r.status_code, r.text[:200])
+            all_ok = False
+    return all_ok
+
+
 def run_restore(args, *, session_factory=create_session, boto3_module=None):
     try:
         config = load_config(args.tag)
@@ -353,6 +456,13 @@ def run_restore(args, *, session_factory=create_session, boto3_module=None):
             return 1
         print(f"\nData-stream restore completed via superadmin cert: {repository}/{snapshot_name} -> {endpoint}")
         print(f"Restored: {', '.join(targets)}")
+        remaps = config.get("searchable_snapshots") or []
+        dest_containers = _resolve_dest_containers(args)
+        if remaps and not remap_searchable_snapshots(
+            remaps, session, endpoint, dest_containers,
+            get_existing_indices(session, endpoint), boto3_module,
+        ):
+            return 1
         return 0
 
     if not restore_snapshot(session, endpoint, repository, snapshot_name, targets):
@@ -360,12 +470,26 @@ def run_restore(args, *, session_factory=create_session, boto3_module=None):
 
     print(f"\nRestore started: {repository}/{snapshot_name} -> {endpoint}")
     print(f"Indices: {len(targets)}")
+    remaps = config.get("searchable_snapshots") or []
+    if remaps:
+        dest_containers = _resolve_dest_containers(args)
+        if not remap_searchable_snapshots(
+            remaps, session, endpoint, dest_containers,
+            get_existing_indices(session, endpoint), boto3_module,
+        ):
+            return 1
+        print(f"Searchable remaps completed: {len(remaps)}")
     print(
         f"Monitor recovery with (reads the dest password from {args.creds_file}):\n"
         f"  PW=$(python3 -c \"import json;print(json.load(open('{args.creds_file}'))['opensearch_dest']['password'])\")\n"
         f"  curl -ku \"{username}:$PW\" \"{endpoint}/_cat/recovery?v\"\n"
     )
     return 0
+
+
+def _resolve_dest_containers(args):
+    raw = getattr(args, "dest_containers", None) or getattr(args, "install_container", None) or ""
+    return [c.strip() for c in raw.split(",") if c.strip()]
 
 
 def parse_arguments(argv=None):
@@ -380,6 +504,9 @@ def parse_arguments(argv=None):
                         help="s3 only: on this destination container, install repository-s3 if "
                              "missing, mint a key for the tag's IAM user, install it into the "
                              "keystore, and reload - all before restoring")
+    parser.add_argument("--dest-containers", dest="dest_containers",
+                        help="Comma-separated destination containers for searchable-snapshot "
+                             "remaps (Approach A). Defaults to --install-container.")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)

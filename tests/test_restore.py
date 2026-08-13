@@ -476,3 +476,74 @@ def test_run_restore_datastream_uses_admin_cert(tmp_path, monkeypatch):
     assert rc == 0
     assert basic == []  # basic-auth path not used for a data stream
     assert cert == [("os-dest", ["logs-datastream"])]  # restored the data stream by name via cert
+
+
+_REMAP = {
+    "name": "logs-searchable", "source_index": "logs",
+    "backing_repository": "snapexe-ss-repo-abcd", "backing_snapshot": "ss-snap",
+    "bucket": "snapexe-ss-abcd", "base_path": "snapexe-ss-repo-abcd", "region": "us-west-2",
+}
+
+
+def test_remap_reuses_existing_creds_no_mint(monkeypatch):
+    # register probe succeeds with the dest's existing creds -> no key minted/installed
+    monkeypatch.setattr(restore, "register_repository", lambda s, e, name, body, **kw: True)
+    minted, installed = [], []
+    monkeypatch.setattr(restore, "create_iam_user_with_keys", lambda *a, **k: minted.append(1) or {})
+    monkeypatch.setattr(restore, "install_keystore_key", lambda c, k, v: installed.append(c))
+    session = MagicMock()
+    session.post.return_value = _json_response({"snapshot": {"snapshot": "ss-snap"}})
+    ok = restore.remap_searchable_snapshots(
+        [dict(_REMAP)], session, "https://target:9201", ["os-dest-hot"], [], MagicMock())
+    assert ok is True
+    assert minted == [] and installed == []  # existing creds worked
+    body = session.post.call_args.kwargs["json"]
+    assert body["storage_type"] == "remote_snapshot"
+    assert body["indices"] == "logs" and body["rename_replacement"] == "logs-searchable"
+
+
+def test_remap_mints_and_installs_when_creds_missing(monkeypatch):
+    # probe register fails, then succeeds after minting + installing the backing key
+    n = {"c": 0}
+    def fake_register(s, e, name, body, **kw):
+        n["c"] += 1
+        return n["c"] > 1  # first call (probe) fails, second (after mint) succeeds
+    monkeypatch.setattr(restore, "register_repository", fake_register)
+    monkeypatch.setattr(restore, "reload_secure_settings", lambda s, e: True)
+    installed = []
+    monkeypatch.setattr(restore, "install_keystore_key", lambda c, k, v: installed.append((c, k)))
+    boto3_module = MagicMock()
+    boto3_module.client.return_value.create_access_key.return_value = {
+        "AccessKey": {"AccessKeyId": "AKIA1", "SecretAccessKey": "sek1"}}
+    session = MagicMock()
+    session.post.return_value = _json_response({"snapshot": {"snapshot": "ss-snap"}})
+    ok = restore.remap_searchable_snapshots(
+        [dict(_REMAP)], session, "https://target:9201",
+        ["os-dest-hot", "os-dest-warm"], [], boto3_module)
+    assert ok is True
+    assert [c for c, _ in installed] == [
+        "os-dest-hot", "os-dest-hot", "os-dest-warm", "os-dest-warm"]
+    assert session.post.called
+
+
+def test_remap_skips_existing(monkeypatch):
+    monkeypatch.setattr(restore, "register_repository", lambda *a, **k: (_ for _ in ()).throw(AssertionError()))
+    session = MagicMock()
+    ok = restore.remap_searchable_snapshots(
+        [dict(_REMAP)], session, "https://target:9201",
+        ["os-dest-hot"], existing_indices=["logs-searchable"], boto3_module=MagicMock())
+    assert ok is True
+    session.post.assert_not_called()  # skipped: target already present, register never attempted
+
+
+def test_remap_fails_when_creds_missing_and_no_containers(monkeypatch):
+    monkeypatch.setattr(restore, "register_repository", lambda s, e, name, body, **kw: False)  # probe fails
+    ok = restore.remap_searchable_snapshots(
+        [dict(_REMAP)], MagicMock(), "https://t:9201", [], existing_indices=[], boto3_module=MagicMock())
+    assert ok is False
+
+
+def test_remap_searchable_snapshots_no_remaps_is_noop():
+    assert restore.remap_searchable_snapshots(
+        [], MagicMock(), "https://t:9201", [], existing_indices=[], boto3_module=MagicMock(),
+    ) is True

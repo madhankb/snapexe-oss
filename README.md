@@ -45,8 +45,17 @@ cp snapexe-creds.example.json snapexe-creds.json
 ## Searchable snapshots
 
 Indices whose store type is `remote_snapshot` (searchable snapshot indices) are
-detected via the index settings API and excluded automatically - OpenSearch cannot
-re-snapshot them.
+detected via the index settings API and excluded from the snapshot itself - OpenSearch
+cannot re-snapshot them, since their data already lives as a snapshot in S3.
+
+For each such index, the snapshot config records its backing repository, snapshot,
+bucket, and region under `searchable_snapshots`. On restore, the tool recreates each
+searchable index on the target by registering the same backing repo on dest and issuing
+a `remote_snapshot` restore - **Approach A**: dest reads the SAME S3 objects, zero data
+copied. Provide the target node container(s) with `--dest-containers` (defaults to
+`--install-container`) so the tool can install the backing bucket's keys on every dest
+node. Requirement: dest must have IAM access to the source's backing bucket (and its
+warm/search-role node).
 
 ## Usage
 
@@ -255,6 +264,7 @@ steps are skipped.
 | `--endpoint` | yes | TARGET cluster URL to restore into |
 | `--indices` | no | Comma-separated indices to restore verbatim (skips discovery/filter) |
 | `--install-container` | no | s3 only: install repository-s3 if missing, mint/install a keystore key, and reload before restoring |
+| `--dest-containers` | no | Comma-separated destination containers for searchable-snapshot remaps (defaults to `--install-container`) |
 | `--dry-run` | no | Preview without changes |
 | `--debug` | no | Debug logging |
 
