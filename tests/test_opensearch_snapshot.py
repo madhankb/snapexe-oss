@@ -276,6 +276,9 @@ def test_create_snapshot_async_success():
     assert task_id == "task-123"
     sent_body = session.put.call_args.kwargs["json"]
     assert sent_body["indices"] == "logs"
+    assert sent_body["ignore_unavailable"] is True
+    assert sent_body["include_global_state"] is False
+    assert sent_body["partial"] is False
 
 
 def test_create_snapshot_async_rejects_empty_indices():

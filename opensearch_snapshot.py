@@ -253,7 +253,12 @@ def create_snapshot_async(session, endpoint, repository, snapshot_name, indices)
             endpoint + "/",
             f"_snapshot/{repository}/{snapshot_name}?wait_for_completion=false",
         )
-        body = {"indices": ",".join(indices)}
+        body = {
+            "indices": ",".join(indices),
+            "ignore_unavailable": True,
+            "include_global_state": False,
+            "partial": False,
+        }
         resp = session.put(url, json=body, verify=False, timeout=60)
         if resp.status_code in (200, 201, 202):
             task_id = resp.json().get("task")
