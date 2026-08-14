@@ -660,8 +660,8 @@ def _auto_provision_args(**overrides):
         command="snapshot", tag="local", endpoint="localhost:9200", repo_type="s3",
         creds_file="snapexe-creds.json", indices=None, repository=None,
         snapshot_name="snapexe-local-hotsnapshot-t", repo_path=None,
-        auto_provision=True, install_container="os-source", region=None, bucket=None,
-        dry_run=False, debug=False,
+        auto_provision=True, install_container="os-source", source_containers=None,
+        region=None, bucket=None, dry_run=False, debug=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -706,6 +706,9 @@ def test_auto_provision_happy_path(tmp_path, monkeypatch):
         oss, "install_keystore_key",
         lambda container, name, value: installed.append((container, name)),
     )
+    # single-node cluster: discovery maps the one node to its container
+    monkeypatch.setattr(oss, "get_cluster_node_names", lambda s, e: ["os-source"], raising=False)
+    monkeypatch.setattr(oss, "running_docker_container_names", lambda: {"os-source"}, raising=False)
 
     boto3_module = MagicMock()
     boto3_module.session.Session.return_value.region_name = "us-east-1"
@@ -741,50 +744,210 @@ def test_auto_provision_happy_path(tmp_path, monkeypatch):
     assert "secret_access_key" not in cfg
 
 
-def test_has_repository_s3_detects_present():
-    session = MagicMock()
-    session.get.return_value = _json_response(
-        [{"component": "repository-s3"}, {"component": "opensearch-sql"}]
+def test_parse_snapshot_source_containers():
+    ns = oss.parse_arguments([
+        "snapshot", "--tag", "local", "--endpoint", "https://h:9200", "--repo-type", "s3",
+        "--auto-provision", "--install-container", "os-source-hot",
+        "--source-containers", "os-source-hot,os-source-warm",
+    ])
+    assert ns.source_containers == "os-source-hot,os-source-warm"
+
+
+def test_auto_provision_installs_keys_on_all_source_containers(tmp_path, monkeypatch):
+    # Explicit --source-containers overrides auto-discovery and is used verbatim.
+    monkeypatch.chdir(tmp_path)
+    _write_source_creds(tmp_path)
+
+    installed = []
+    monkeypatch.setattr(
+        oss, "install_keystore_key",
+        lambda container, name, value: installed.append((container, name)),
     )
-    assert oss.has_repository_s3(session, "https://h:9200") is True
 
+    boto3_module = MagicMock()
+    boto3_module.session.Session.return_value.region_name = "us-east-1"
+    boto3_module.client.return_value.create_access_key.return_value = {
+        "AccessKey": {"AccessKeyId": "AKIA1", "SecretAccessKey": "sek1"}
+    }
 
-def test_has_repository_s3_absent():
     session = MagicMock()
-    session.get.return_value = _json_response([{"component": "opensearch-sql"}])
-    assert oss.has_repository_s3(session, "https://h:9200") is False
+    session.post.return_value = _json_response({}, status=200)  # reload_secure_settings
+    session.get.side_effect = [
+        _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
+        _json_response([{"index": "logs"}]),
+        _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
+        _json_response({"data_streams": []}),
+        _json_response({"snapshots": []}),
+    ]
+    session.put.side_effect = [
+        _json_response({"acknowledged": True}),          # register repo
+        _json_response({"task": "task-1"}, status=202),  # snapshot
+    ]
+
+    rc = oss.run_snapshot(
+        _auto_provision_args(source_containers="os-source-hot,os-source-warm"),
+        session_factory=lambda u, p: session,
+        boto3_module=boto3_module,
+    )
+    assert rc == 0
+    key = "s3.client.default.access_key"
+    sec = "s3.client.default.secret_key"
+    # Every source node gets both keys; the reload is a single cluster-wide call.
+    assert installed == [
+        ("os-source-hot", key), ("os-source-hot", sec),
+        ("os-source-warm", key), ("os-source-warm", sec),
+    ]
+    session.post.assert_called_once()
 
 
-def test_has_repository_s3_unknown_on_error():
+def test_discover_source_containers_maps_all_cluster_nodes(monkeypatch):
+    monkeypatch.setattr(oss, "get_cluster_node_names",
+                        lambda s, e: ["os-source-hot", "os-source-warm"], raising=False)
+    monkeypatch.setattr(oss, "running_docker_container_names",
+                        lambda: {"os-source-hot", "os-source-warm", "os-dest-hot"}, raising=False)
+    got = oss.discover_source_containers(MagicMock(), "https://h:9200", "os-source-hot")
+    assert got == ["os-source-hot", "os-source-warm"]
+
+
+def test_discover_source_containers_single_node(monkeypatch):
+    monkeypatch.setattr(oss, "get_cluster_node_names", lambda s, e: ["os-solo"], raising=False)
+    monkeypatch.setattr(oss, "running_docker_container_names", lambda: {"os-solo"}, raising=False)
+    got = oss.discover_source_containers(MagicMock(), "https://h:9200", "os-solo")
+    assert got == ["os-solo"]
+
+
+def test_discover_source_containers_warns_on_unmapped_node(monkeypatch, caplog):
+    monkeypatch.setattr(oss, "get_cluster_node_names",
+                        lambda s, e: ["os-source-hot", "remote-node"], raising=False)
+    monkeypatch.setattr(oss, "running_docker_container_names",
+                        lambda: {"os-source-hot"}, raising=False)
+    with caplog.at_level("WARNING"):
+        got = oss.discover_source_containers(MagicMock(), "https://h:9200", "os-source-hot")
+    assert got == ["os-source-hot"]           # only mappable nodes are keyed
+    assert "remote-node" in caplog.text        # the un-mappable one is surfaced
+
+
+def test_auto_provision_auto_discovers_all_nodes(tmp_path, monkeypatch):
+    # No --source-containers: the tool discovers both nodes and keys each one.
+    monkeypatch.chdir(tmp_path)
+    _write_source_creds(tmp_path)
+
+    monkeypatch.setattr(oss, "get_cluster_node_names",
+                        lambda s, e: ["os-source-hot", "os-source-warm"], raising=False)
+    monkeypatch.setattr(oss, "running_docker_container_names",
+                        lambda: {"os-source-hot", "os-source-warm"}, raising=False)
+
+    installed = []
+    monkeypatch.setattr(
+        oss, "install_keystore_key",
+        lambda container, name, value: installed.append((container, name)),
+    )
+
+    boto3_module = MagicMock()
+    boto3_module.session.Session.return_value.region_name = "us-east-1"
+    boto3_module.client.return_value.create_access_key.return_value = {
+        "AccessKey": {"AccessKeyId": "AKIA1", "SecretAccessKey": "sek1"}
+    }
+
+    session = MagicMock()
+    session.post.return_value = _json_response({}, status=200)  # reload_secure_settings
+    session.get.side_effect = [
+        _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
+        _json_response([{"index": "logs"}]),
+        _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
+        _json_response({"data_streams": []}),
+        _json_response({"snapshots": []}),
+    ]
+    session.put.side_effect = [
+        _json_response({"acknowledged": True}),          # register repo
+        _json_response({"task": "task-1"}, status=202),  # snapshot
+    ]
+
+    rc = oss.run_snapshot(
+        _auto_provision_args(install_container="os-source-hot", source_containers=None),
+        session_factory=lambda u, p: session,
+        boto3_module=boto3_module,
+    )
+    assert rc == 0
+    key = "s3.client.default.access_key"
+    sec = "s3.client.default.secret_key"
+    assert installed == [
+        ("os-source-hot", key), ("os-source-hot", sec),
+        ("os-source-warm", key), ("os-source-warm", sec),
+    ]
+    session.post.assert_called_once()  # single cluster-wide reload
+
+
+def test_nodes_missing_repository_s3_all_present():
+    session = MagicMock()
+    session.get.return_value = _json_response([
+        {"name": "n1", "component": "repository-s3"},
+        {"name": "n1", "component": "opensearch-sql"},
+        {"name": "n2", "component": "repository-s3"},
+    ])
+    assert oss.nodes_missing_repository_s3(session, "https://h:9200") == []
+
+
+def test_nodes_missing_repository_s3_detects_partial():
+    # The bug the old any-node check missed: present on n1, absent on n2.
+    session = MagicMock()
+    session.get.return_value = _json_response([
+        {"name": "n1", "component": "repository-s3"},
+        {"name": "n2", "component": "opensearch-sql"},
+    ])
+    assert oss.nodes_missing_repository_s3(session, "https://h:9200") == ["n2"]
+
+
+def test_nodes_missing_repository_s3_unknown_on_error():
     session = MagicMock()
     session.get.return_value = _json_response({}, status=500)
-    assert oss.has_repository_s3(session, "https://h:9200") is None
+    assert oss.nodes_missing_repository_s3(session, "https://h:9200") is None
 
 
 def test_ensure_repository_s3_present_is_noop(monkeypatch):
-    monkeypatch.setattr(oss, "has_repository_s3", lambda s, e: True)
+    monkeypatch.setattr(oss, "nodes_missing_repository_s3", lambda s, e: [], raising=False)
     assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", "os-source") is True
 
 
 def test_ensure_repository_s3_unknown_proceeds(monkeypatch):
-    monkeypatch.setattr(oss, "has_repository_s3", lambda s, e: None)
+    monkeypatch.setattr(oss, "nodes_missing_repository_s3", lambda s, e: None, raising=False)
     assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", None) is True
 
 
-def test_ensure_repository_s3_missing_no_container_fails(monkeypatch):
-    monkeypatch.setattr(oss, "has_repository_s3", lambda s, e: False)
+def test_ensure_repository_s3_missing_unmappable_node_fails(monkeypatch):
+    monkeypatch.setattr(oss, "nodes_missing_repository_s3",
+                        lambda s, e: ["remote-node"], raising=False)
+    monkeypatch.setattr(oss, "running_docker_container_names", lambda: set())
     assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", None) is False
 
 
-def test_ensure_repository_s3_installs_and_restarts(monkeypatch):
+def test_ensure_repository_s3_installs_single_node(monkeypatch):
+    states = iter([["os-solo"], []])  # missing before, none after install+restart
+    monkeypatch.setattr(oss, "nodes_missing_repository_s3", lambda s, e: next(states), raising=False)
+    monkeypatch.setattr(oss, "running_docker_container_names", lambda: {"os-solo"})
     calls = []
-    states = iter([False, True])  # missing before, present after install+restart
-    monkeypatch.setattr(oss, "has_repository_s3", lambda s, e: next(states))
     monkeypatch.setattr(oss, "install_repository_s3_plugin", lambda c: calls.append(("install", c)))
     monkeypatch.setattr(oss, "restart_container", lambda c: calls.append(("restart", c)))
     monkeypatch.setattr(oss, "wait_for_cluster", lambda s, e: True)
-    assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", "os-source") is True
-    assert calls == [("install", "os-source"), ("restart", "os-source")]
+    assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", "os-solo") is True
+    assert calls == [("install", "os-solo"), ("restart", "os-solo")]
+
+
+def test_ensure_repository_s3_installs_on_all_missing_nodes(monkeypatch):
+    # Multi-node: plugin missing on both nodes -> install + restart both, then re-verify.
+    states = iter([["os-source-hot", "os-source-warm"], []])
+    monkeypatch.setattr(oss, "nodes_missing_repository_s3", lambda s, e: next(states), raising=False)
+    monkeypatch.setattr(oss, "running_docker_container_names",
+                        lambda: {"os-source-hot", "os-source-warm"})
+    calls = []
+    monkeypatch.setattr(oss, "install_repository_s3_plugin", lambda c: calls.append(("install", c)))
+    monkeypatch.setattr(oss, "restart_container", lambda c: calls.append(("restart", c)))
+    monkeypatch.setattr(oss, "wait_for_cluster", lambda s, e: True)
+    assert oss.ensure_repository_s3(MagicMock(), "https://h:9200", "os-source-hot") is True
+    assert calls == [
+        ("install", "os-source-hot"), ("install", "os-source-warm"),
+        ("restart", "os-source-hot"), ("restart", "os-source-warm"),
+    ]
 
 
 def test_register_repository_retries_transient_key_error(monkeypatch):

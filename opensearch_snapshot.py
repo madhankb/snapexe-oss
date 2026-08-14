@@ -486,22 +486,33 @@ def install_keystore_key(container, key_name, secret_value):
     logger.info("Installed %s into '%s' keystore", key_name, container)
 
 
-def has_repository_s3(session, endpoint):
-    """Best-effort check that the repository-s3 plugin is installed on the cluster.
+def nodes_missing_repository_s3(session, endpoint):
+    """Node names in the cluster that lack the repository-s3 plugin.
 
-    Returns True/False, or None if the plugin list could not be retrieved (the caller
-    then just proceeds and lets registration surface any real error). On a multi-node
-    cluster this only confirms the plugin is present on at least one node.
+    Returns a sorted list (possibly empty), or None if the plugin listing could not be
+    retrieved (the caller then just proceeds and lets registration surface any real
+    error). Node membership is taken from `_cat/plugins`, which lists every node (each
+    ships bundled plugins), so a node absent from the repository-s3 rows is genuinely
+    missing it - unlike a cluster-wide "any node has it" check.
     """
     try:
-        url = urljoin(endpoint + "/", "_cat/plugins?format=json&h=component")
+        url = urljoin(endpoint + "/", "_cat/plugins?format=json&h=name,component")
         resp = session.get(url, verify=False, timeout=30)
         if resp.status_code != 200:
             return None
-        return any(row.get("component") == "repository-s3" for row in resp.json())
+        rows = resp.json()
     except Exception as exc:
         logger.warning("Could not check installed plugins: %s", exc)
         return None
+    all_nodes, have = set(), set()
+    for row in rows:
+        name = row.get("name")
+        if not name:
+            continue
+        all_nodes.add(name)
+        if row.get("component") == "repository-s3":
+            have.add(name)
+    return sorted(all_nodes - have)
 
 
 def install_repository_s3_plugin(container):
@@ -538,37 +549,60 @@ def wait_for_cluster(session, endpoint, attempts=40, delay=3):
     return False
 
 
-def ensure_repository_s3(session, endpoint, container):
-    """Validate the repository-s3 plugin is installed; if missing and a container is
-    given, install it and restart the node. Returns True if s3 repositories can be used.
+def ensure_repository_s3(session, endpoint, fallback_container=None):
+    """Ensure the repository-s3 plugin is installed on every node; install where missing.
+
+    Each node lacking the plugin is mapped to a running docker container of the same
+    name (falling back to fallback_container), the plugin is installed there, those
+    nodes are restarted, and the cluster is re-checked. Single- and multi-node clusters
+    are both handled. Returns True if s3 repositories can be used.
     """
-    present = has_repository_s3(session, endpoint)
-    if present is None:
+    missing = nodes_missing_repository_s3(session, endpoint)
+    if missing is None:
         logger.warning("Could not verify installed plugins; proceeding")
         return True
-    if present:
+    if not missing:
         return True
-    if not container:
+
+    running = running_docker_container_names()
+    targets, unresolved = [], []
+    for node in missing:
+        if node in running:
+            container = node
+        elif fallback_container:
+            container = fallback_container
+        else:
+            unresolved.append(node)
+            continue
+        if container not in targets:
+            targets.append(container)
+    if unresolved:
         logger.error(
-            "The repository-s3 plugin is not installed on the cluster. Install it on every "
-            "node (bin/opensearch-plugin install repository-s3) and restart, then retry. For "
-            "a local single-node cluster, pass --install-container to do this automatically."
+            "repository-s3 is missing on node(s) %s and no matching running container was "
+            "found. Install it there (bin/opensearch-plugin install repository-s3) and "
+            "restart, then retry.", ", ".join(unresolved),
         )
         return False
-    logger.info("repository-s3 not installed; installing into '%s' and restarting...", container)
+
+    logger.info("repository-s3 missing on %s; installing into %s and restarting...",
+                ", ".join(missing), ", ".join(targets))
     try:
-        install_repository_s3_plugin(container)
-        restart_container(container)
+        for container in targets:
+            install_repository_s3_plugin(container)
+        for container in targets:
+            restart_container(container)
     except RuntimeError as exc:
         logger.error(str(exc))
         return False
     if not wait_for_cluster(session, endpoint):
         logger.error("Cluster did not become ready after restart")
         return False
-    if not has_repository_s3(session, endpoint):
-        logger.error("repository-s3 still not present after install + restart")
+    still_missing = nodes_missing_repository_s3(session, endpoint)
+    if still_missing:
+        logger.error("repository-s3 still missing on %s after install + restart",
+                     ", ".join(still_missing))
         return False
-    logger.info("repository-s3 plugin is ready")
+    logger.info("repository-s3 plugin is ready on all nodes")
     return True
 
 
@@ -617,6 +651,11 @@ def parse_arguments(argv=None):
     snap.add_argument("--install-container", dest="install_container",
                       help="Local container for node-local setup: keystore keys (with "
                            "--auto-provision) and auto-installing repository-s3 if missing")
+    snap.add_argument("--source-containers", dest="source_containers",
+                      help="Comma-separated source containers to install the keystore keys into "
+                           "with --auto-provision. Overrides auto-discovery (which maps every "
+                           "cluster node to a same-named container); use only when node names "
+                           "don't match container names.")
     snap.add_argument("--region", help="AWS region for --auto-provision")
     snap.add_argument("--bucket", help="Reuse an existing bucket for --auto-provision")
     snap.add_argument("--dry-run", dest="dry_run", action="store_true")
@@ -732,18 +771,76 @@ def run_provision(args, *, boto3_module=None):
     return 0
 
 
-def _auto_provision(args, session, endpoint, boto3_module=None):
-    """Provision s3, install keys into a local node, and reload secure settings.
+def get_cluster_node_names(session, endpoint):
+    """Best-effort list of every node name in the cluster (empty list on failure)."""
+    try:
+        url = urljoin(endpoint + "/", "_cat/nodes?format=json&h=name")
+        resp = session.get(url, verify=False, timeout=30)
+        if resp.status_code != 200:
+            return []
+        return [row.get("name") for row in resp.json() if row.get("name")]
+    except Exception as exc:
+        logger.warning("Could not list cluster nodes: %s", exc)
+        return []
 
-    Convenience for single-node local clusters reachable via `docker exec`; writes
-    the config that `_setup_repository` then reads. Returns 0 on success, else a
-    non-zero exit code.
+
+def running_docker_container_names():
+    """Best-effort set of running docker container names (empty set on failure)."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return set()
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    except Exception:
+        return set()
+
+
+def discover_source_containers(session, endpoint, anchor_container):
+    """Resolve which local containers to install the keystore keys into.
+
+    Maps each cluster node to a running docker container of the same name (the local
+    docker-compose convention where node.name == container name), so a single-node
+    cluster resolves to one container and a multi-node cluster to all of them. Always
+    includes anchor_container. Any node that can't be mapped is surfaced as a warning,
+    since an un-keyed node fails repo verification; degrades to just [anchor_container]
+    when the node list or docker listing is unavailable.
+    """
+    running = running_docker_container_names()
+    node_names = get_cluster_node_names(session, endpoint)
+    matched = [n for n in node_names if n in running]
+    containers = list(dict.fromkeys([anchor_container, *matched]))
+    unmapped = [n for n in node_names if n not in running]
+    if unmapped:
+        logger.warning(
+            "Could not map cluster node(s) to a running container: %s. If they hold shards, "
+            "install the keys there too via --source-containers, or repo verification will "
+            "fail on them.", ", ".join(unmapped),
+        )
+    return containers
+
+
+def _explicit_source_containers(args):
+    raw = getattr(args, "source_containers", None) or ""
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+def _auto_provision(args, session, endpoint, boto3_module=None):
+    """Provision s3, install keys into the source node(s), and reload secure settings.
+
+    Convenience for local clusters reachable via `docker exec`; writes the config that
+    `_setup_repository` then reads. The keys must live on every node that holds shards
+    (repo verification runs cluster-wide), so the target nodes are auto-discovered from
+    the cluster - single- and multi-node both work. Pass --source-containers to override.
+    Returns 0 on success, else a non-zero exit code.
     """
     if args.repo_type != "s3":
         logger.error("--auto-provision only applies to --repo-type s3")
         return 2
-    container = getattr(args, "install_container", None)
-    if not container:
+    install_container = getattr(args, "install_container", None)
+    if not install_container:
         logger.error("--auto-provision requires --install-container CONTAINER")
         return 2
     if args.dry_run:
@@ -752,13 +849,19 @@ def _auto_provision(args, session, endpoint, boto3_module=None):
 
     if boto3_module is None:
         import boto3 as boto3_module
+
+    containers = _explicit_source_containers(args) or discover_source_containers(
+        session, endpoint, install_container
+    )
     config, keys = provision_backend(
         args.tag, endpoint, getattr(args, "region", None), getattr(args, "bucket", None), boto3_module
     )
     save_config(args.tag, config)
+    logger.info("Installing keystore keys into node(s): %s", ", ".join(containers))
     try:
-        install_keystore_key(container, "s3.client.default.access_key", keys["access_key_id"])
-        install_keystore_key(container, "s3.client.default.secret_key", keys["secret_access_key"])
+        for container in containers:
+            install_keystore_key(container, "s3.client.default.access_key", keys["access_key_id"])
+            install_keystore_key(container, "s3.client.default.secret_key", keys["secret_access_key"])
     except RuntimeError as exc:
         logger.error(str(exc))
         return 1
