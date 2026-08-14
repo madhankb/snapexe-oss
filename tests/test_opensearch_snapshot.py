@@ -182,6 +182,30 @@ def test_load_creds_file_rejects_non_dict(tmp_path):
         oss.load_creds_file(str(p))
 
 
+def test_load_creds_uses_file_when_no_secret(tmp_path):
+    path = _write_creds(tmp_path, {"opensearch_source": {"username": "admin", "password": "pw"}})
+    assert oss.load_creds(None, path) == {"opensearch_source": {"username": "admin", "password": "pw"}}
+
+
+def test_load_creds_reads_secret_when_secret_id_set():
+    payload = {"opensearch_source": {"username": "admin", "password": "sekret"},
+               "opensearch_dest": {"username": "admin", "password": "sekret"}}
+    boto3_module = MagicMock()
+    sm = boto3_module.client.return_value
+    sm.get_secret_value.return_value = {"SecretString": json.dumps(payload)}
+    result = oss.load_creds("snapexe/opensearch", None, boto3_module=boto3_module)
+    assert result == payload
+    boto3_module.client.assert_called_once_with("secretsmanager")
+    sm.get_secret_value.assert_called_once_with(SecretId="snapexe/opensearch")
+
+
+def test_load_secret_creds_rejects_non_json():
+    boto3_module = MagicMock()
+    boto3_module.client.return_value.get_secret_value.return_value = {"SecretString": "not json"}
+    with pytest.raises(ValueError, match="not valid JSON"):
+        oss.load_secret_creds("snapexe/opensearch", boto3_module=boto3_module)
+
+
 def test_resolve_credentials_source():
     fc = {"opensearch_source": {"username": "srcuser", "password": "srcpw"},
           "opensearch_dest": {"username": "dstuser", "password": "dstpw"}}

@@ -220,6 +220,37 @@ def load_creds_file(path):
     return data
 
 
+def load_secret_creds(secret_id, boto3_module=None):
+    """Fetch OpenSearch credentials from AWS Secrets Manager.
+
+    The secret's JSON mirrors the creds file minus the aws block:
+    {"opensearch_source": {...}, "opensearch_dest": {...}}. Authenticates via the
+    boto3 default credential chain (no static keys).
+    """
+    if boto3_module is None:
+        import boto3 as boto3_module
+    from botocore.exceptions import ClientError
+    client = boto3_module.client("secretsmanager")
+    try:
+        resp = client.get_secret_value(SecretId=secret_id)
+    except ClientError as exc:
+        raise ValueError(f"Could not read secret '{secret_id}' from Secrets Manager: {exc}")
+    try:
+        data = json.loads(resp["SecretString"])
+    except (KeyError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Secret '{secret_id}' is not valid JSON: {exc}")
+    if not isinstance(data, dict):
+        raise ValueError(f"Secret '{secret_id}' must contain a JSON object")
+    return data
+
+
+def load_creds(secret_id, creds_file, boto3_module=None):
+    """Resolve the credentials dict: Secrets Manager when secret_id is set, else the JSON file."""
+    if secret_id:
+        return load_secret_creds(secret_id, boto3_module)
+    return load_creds_file(creds_file)
+
+
 def apply_aws_creds_from_file(file_creds):
     aws = file_creds.get("aws", {})
     if aws.get("access_key_id"):
