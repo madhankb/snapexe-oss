@@ -8,10 +8,10 @@ and removes everything the snapshot tool created for that tag:
   - the IAM user snapexe-{tag}-user, its access keys and inline policy  (s3 only)
   - the local snapexe-{tag}-config.json file
 
-OpenSearch cleanup uses the opensearch_source credentials; AWS cleanup uses the aws
-block (or the boto3 default chain), exactly like opensearch_snapshot.py. This is
-destructive: it prompts for confirmation unless --yes, and supports --dry-run. The
-config file is kept if any step fails, so the teardown can be re-run.
+OpenSearch cleanup uses the opensearch_source credentials; AWS cleanup uses the boto3
+default credential chain, exactly like opensearch_snapshot.py. This is destructive: it
+prompts for confirmation unless --yes, and supports --dry-run. The config file is kept
+if any step fails, so the teardown can be re-run.
 """
 
 import argparse
@@ -22,6 +22,8 @@ import sys
 import requests
 import urllib3
 from urllib.parse import urljoin, urlparse
+
+from opensearch_snapshot import load_creds
 
 # Local clusters use self-signed certs and the tool calls verify=False; silence the noise.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -42,22 +44,6 @@ def normalize_endpoint(url):
     return url
 
 
-def load_creds_file(path):
-    try:
-        with open(path, "r") as handle:
-            data = json.load(handle)
-    except FileNotFoundError:
-        raise FileNotFoundError(
-            f"Credentials file {path} not found. Create it (see snapexe-creds.example.json) "
-            "or pass --creds-file PATH."
-        )
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid JSON in credentials file {path}: {exc}")
-    if not isinstance(data, dict):
-        raise ValueError(f"Credentials file {path} must contain a JSON object")
-    return data
-
-
 def resolve_credentials(file_creds, section):
     creds = file_creds.get(section, {})
     username = creds.get("username")
@@ -67,16 +53,6 @@ def resolve_credentials(file_creds, section):
     if not password:
         raise ValueError(f"Credentials file missing {section}.password")
     return username, password
-
-
-def apply_aws_creds_from_file(file_creds):
-    aws = file_creds.get("aws", {})
-    if aws.get("access_key_id"):
-        os.environ["AWS_ACCESS_KEY_ID"] = aws["access_key_id"]
-    if aws.get("secret_access_key"):
-        os.environ["AWS_SECRET_ACCESS_KEY"] = aws["secret_access_key"]
-    if aws.get("region"):
-        os.environ["AWS_DEFAULT_REGION"] = aws["region"]
 
 
 def create_session(username, password):
@@ -228,7 +204,7 @@ def run_delete_all(args, *, session_factory=create_session, boto3_module=None):
         logger.error(str(exc))
         return 2
     try:
-        file_creds = load_creds_file(args.creds_file)
+        file_creds = load_creds(getattr(args, "secret_id", None), args.creds_file, boto3_module)
     except (FileNotFoundError, ValueError) as exc:
         logger.error(str(exc))
         return 2
@@ -278,7 +254,6 @@ def run_delete_all(args, *, session_factory=create_session, boto3_module=None):
             delete_s3_bucket(None, config.get("bucket"), dry_run=True)
             delete_iam_user(None, user_name, dry_run=True)
         else:
-            apply_aws_creds_from_file(file_creds)
             if boto3_module is None:
                 import boto3 as boto3_module
             if config.get("bucket"):
@@ -319,6 +294,8 @@ def parse_arguments(argv=None):
     )
     parser.add_argument("--tag", required=True)
     parser.add_argument("--creds-file", dest="creds_file", default=DEFAULT_CREDS_FILE)
+    parser.add_argument("--secret-id", dest="secret_id",
+                        help="AWS Secrets Manager secret holding OpenSearch creds; overrides --creds-file")
     parser.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
     parser.add_argument("--debug", action="store_true")
