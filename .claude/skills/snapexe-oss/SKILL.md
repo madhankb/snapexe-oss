@@ -135,8 +135,10 @@ snapexe-oss restore --tag <tag> --endpoint <dest-url> \
 - Default restore brings back non-existing, non-system indices (skips ones already on the target).
   Use `--indices "..."` to restore a specific set.
 - **Data streams** in the snapshot are restored via the destination node's superadmin certificate
-  (requires `--install-container`), and a matching index **template must exist on the target** - see
-  `references/commands.md`.
+  (requires `--install-container`) with `include_global_state: true`, so the data stream's **index
+  template travels in the snapshot and is recreated on the target automatically** - no need to pre-create
+  it. (Global state also carries pipelines/ISM/SM/persistent settings, so restore onto a fresh/recovery
+  cluster, not a shared one.) See `references/commands.md`.
 - **Searchable snapshots** recorded at snapshot time are auto-recreated on the target by re-pointing at
   the same S3 backing snapshot (`--dest-containers` names the dest nodes for key install). Dest needs a
   warm/search-role node.

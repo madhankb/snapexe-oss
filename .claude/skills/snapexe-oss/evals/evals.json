@@ -10,7 +10,7 @@
     {
       "id": 2,
       "prompt": "Restore the nightly snapshot into the destination cluster at https://localhost:9201, including the data stream. The dest is a single-node cluster in the os-dest container.",
-      "expected_output": "Runs snapexe-oss restore --tag nightly --endpoint https://localhost:9201 --install-container os-dest (so the data stream can be restored via the superadmin cert; notes the template-on-target requirement). Concise summary of what was restored.",
+      "expected_output": "Runs snapexe-oss restore --tag nightly --endpoint https://localhost:9201 --install-container os-dest (so the data stream can be restored via the superadmin cert; the index template travels in the snapshot via include_global_state, so no pre-created template is required). Concise summary of what was restored.",
       "files": []
     },
     {

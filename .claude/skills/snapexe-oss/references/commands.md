@@ -41,8 +41,10 @@ Behavior:
   the raw `.ds-*` backing indices (the data stream is captured by name instead), and `remote_snapshot`
   (searchable) indices. Searchable indices are recorded in the config under `searchable_snapshots` for
   restore-time remap. Pass `--indices "..."` only to restrict the backup to a specific set.
-- Snapshot request body sets `ignore_unavailable: true`, `include_global_state: false`, `partial: false`.
-  Because `include_global_state` is false, templates/pipelines/ISM/SM are **not** in the snapshot.
+- Snapshot request body sets `ignore_unavailable: true`, `include_global_state: true`, `partial: false`.
+  Because `include_global_state` is **true**, the snapshot also carries global cluster state - composable
+  and component **index templates** (so data streams restore without pre-creating their template), plus
+  ingest pipelines, ISM/SM policies, and persistent settings.
 - Async: returns immediately; verify via `status`.
 
 ## provision
@@ -129,9 +131,11 @@ Never print the creds file or any Secrets Manager values.
   <node1,node2,...>` when node names differ from container names. (Restore has the equivalent
   `--dest-containers`.) An un-keyed node fails verification with "The AWS Access Key Id you provided does
   not exist in our records".
-- **Data stream restore needs a template on the target.** The tool's snapshot uses
-  `include_global_state: false`, so the data-stream template does not travel in the snapshot - create it
-  on the destination before/at restore, or the data-stream restore fails ("no matching index template").
+- **Data-stream index templates travel with the snapshot.** The snapshot uses
+  `include_global_state: true`, and the data-stream restore path also uses `include_global_state: true`
+  (via the superadmin cert), so the composable index template is captured and recreated on the target
+  automatically - no need to pre-create it. (Restoring global state also applies the snapshot's pipelines/
+  ISM/SM/persistent settings to the target, so restore onto a fresh/recovery cluster, not a shared one.)
 - **Data-stream restore is blocked over basic auth** by the security plugin's write-privilege check
   (`no permissions for []`); that's why restore uses the superadmin cert path via `--install-container`.
 - **Searchable snapshots can't be re-snapshotted** - their data already lives in S3. Migration re-points
@@ -140,10 +144,13 @@ Never print the creds file or any Secrets Manager values.
 - **delete-all only deregisters on the config endpoint** (usually the source). If a repo was also
   registered on a destination cluster, remove that registration separately.
 
-## What a snapshot does NOT carry
-A snapexe-oss snapshot moves index data (and, by name, data streams + searchable-snapshot pointers). It
-does **not** carry index templates, ingest pipelines, cluster settings, **ISM policies**, **SM policies**,
-security config (users/roles), or Dashboards saved objects - those live in cluster global state or system
-indices and must be migrated via `include_global_state`-style snapshots or the respective plugin APIs
-(`_index_template`, `_plugins/_ism/policies`, `_plugins/_sm/policies`, security API). Mention this when a
-user expects a "full" cluster clone.
+## What a snapshot carries (and what it does NOT)
+A snapexe-oss snapshot moves index data, data streams (by name) + searchable-snapshot pointers, and -
+because `include_global_state: true` - the cluster global state: composable/component **index templates**,
+**ingest pipelines**, **ISM/SM policies**, stored scripts, and persistent cluster settings. Global state is
+restored only on the data-stream restore path (`include_global_state: true` via the superadmin cert), so a
+plain regular-index restore still won't apply it.
+
+It does **not** carry **security config** (users/roles) or **Dashboards saved objects** - those live in
+system indices, not global state, and must be migrated via the security API / saved-objects export. Mention
+this when a user expects a "full" cluster clone.

@@ -295,7 +295,7 @@ def test_create_snapshot_async_success():
     sent_body = session.put.call_args.kwargs["json"]
     assert sent_body["indices"] == "logs"
     assert sent_body["ignore_unavailable"] is True
-    assert sent_body["include_global_state"] is False
+    assert sent_body["include_global_state"] is True  # carries data-stream templates + global state
     assert sent_body["partial"] is False
 
 

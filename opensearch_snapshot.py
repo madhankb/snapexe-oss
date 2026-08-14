@@ -357,7 +357,11 @@ def create_snapshot_async(session, endpoint, repository, snapshot_name, indices)
         body = {
             "indices": ",".join(indices),
             "ignore_unavailable": True,
-            "include_global_state": False,
+            # Capture global cluster state so data streams' composable index templates (and
+            # component templates) travel with the snapshot and restore without pre-creating
+            # them on the target. Also carries ingest pipelines, ISM/SM policies, and
+            # persistent settings; the data-stream restore path restores these via global state.
+            "include_global_state": True,
             "partial": False,
         }
         resp = session.put(url, json=body, verify=False, timeout=60)
