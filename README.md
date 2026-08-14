@@ -17,8 +17,14 @@ cannot be re-snapshotted.
 
 ## Credentials
 
-All credentials are read from a JSON file (default `snapexe-creds.json` in the working
-directory; override with `--creds-file PATH`). Copy the template and fill it in:
+The tool uses two kinds of credential, resolved separately.
+
+### OpenSearch usernames/passwords
+
+Provided either from a local JSON file (default) or from AWS Secrets Manager.
+
+**File (default):** `snapexe-creds.json` in the working directory (override with
+`--creds-file PATH`). Copy the template and fill it in:
 
 ```bash
 cp snapexe-creds.example.json snapexe-creds.json
@@ -28,19 +34,42 @@ cp snapexe-creds.example.json snapexe-creds.json
 ```json
 {
   "opensearch_source": { "username": "admin", "password": "..." },
-  "opensearch_dest":   { "username": "admin", "password": "..." },
-  "aws": { "access_key_id": "...", "secret_access_key": "...", "region": "us-east-1" }
+  "opensearch_dest":   { "username": "admin", "password": "..." }
 }
 ```
 
-- `snapshot` and `status` use `opensearch_source` (the source cluster they read from).
-- `restore` uses `opensearch_dest` (the destination cluster it restores into).
-- `provision` uses the `aws` section (creates the S3 bucket + IAM user via boto3).
-- `delete-all` uses `opensearch_source` (repository/snapshot cleanup) and the `aws` section (S3 bucket + IAM cleanup).
-- Each command needs only its own block: you can snapshot with just `opensearch_source`
-  filled in, and restore with just `opensearch_dest`.
-- The file must exist; a command errors clearly if the block it needs is missing.
+**Secrets Manager:** pass `--secret-id <name>` to `snapshot`, `status`, `restore`, or
+`delete-all`. The secret's JSON has the same shape as the file above. The secret is read
+using the AWS credential chain (below). Example:
+
+```bash
+aws secretsmanager create-secret --name snapexe/opensearch --secret-string \
+  '{"opensearch_source":{"username":"admin","password":"..."},"opensearch_dest":{"username":"admin","password":"..."}}'
+
+python opensearch_snapshot.py snapshot --tag prod --endpoint https://host:9200 \
+  --repo-type s3 --secret-id snapexe/opensearch
+```
+
+- `snapshot` and `status` use `opensearch_source`; `restore` uses `opensearch_dest`;
+  `delete-all` uses `opensearch_source`. Each command needs only its own block.
 - `snapexe-creds.json` is gitignored. Credentials are never logged or persisted by the tool.
+
+### AWS credentials
+
+AWS access (S3 bucket, IAM user, minted keystore keys, cleanup) always uses the **boto3
+default credential chain** - SSO, an assumed role, or an instance profile. The tool does
+not read static AWS keys from a file. Confirm your identity with
+`aws sts get-caller-identity` before running.
+
+For long-running snapshots on a laptop, wire your temporary-credential source (e.g.
+Isengard) as a refreshable `credential_process` in `~/.aws/config` so botocore
+auto-refreshes past the session's expiry. The multi-hour data upload itself is performed
+by OpenSearch using the minted keystore keys (no session expiry), so temporary credentials
+are sufficient.
+
+Note: OpenSearch's own access to S3 uses static keys installed in the node keystore. These
+are minted per run and never persisted; a true IAM role for the repository requires running
+the nodes on EC2/ECS with an instance profile.
 
 ## Searchable snapshots
 
