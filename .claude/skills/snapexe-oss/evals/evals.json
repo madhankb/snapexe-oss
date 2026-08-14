@@ -1,0 +1,29 @@
+{
+  "skill_name": "snapexe-oss",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Back up the logs and orders indices from my source OpenSearch cluster at https://localhost:9200 to S3. Use the tag 'nightly'. The cluster already has the repo and keys set up.",
+      "expected_output": "Runs snapexe-oss snapshot with --tag nightly --endpoint https://localhost:9200 --repo-type s3 --indices \"logs,orders\" (no --auto-provision, since repo/keys exist), then reports a concise summary (indices snapshotted, points to status). No raw log dump, no secrets.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Restore the nightly snapshot into the destination cluster at https://localhost:9201, including the data stream. The dest is a single-node cluster in the os-dest container.",
+      "expected_output": "Runs snapexe-oss restore --tag nightly --endpoint https://localhost:9201 --install-container os-dest (so the data stream can be restored via the superadmin cert; notes the template-on-target requirement). Concise summary of what was restored.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "We're done testing - delete all the AWS resources and repo for the nightly tag.",
+      "expected_output": "Runs delete-all --tag nightly --dry-run FIRST, shows the preview (bucket, IAM user, repo, snapshots, config), and asks for explicit confirmation before the real delete. Does NOT pass --yes unprompted. Concise summary.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "How far along is the nightly snapshot?",
+      "expected_output": "Runs snapexe-oss status --tag nightly and reports the state + overall percent (e.g. SUCCESS 5/5 shards) in one line. Polls again if IN_PROGRESS.",
+      "files": []
+    }
+  ]
+}

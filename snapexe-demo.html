@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>snapexe-oss - Backup &amp; Restore Demo</title>
+<style>
+  :root{
+    --bg:#0f1720; --panel:#151f2b; --panel-2:#1b2735; --ink:#e6edf3; --muted:#9fb0c0;
+    --line:#26374a; --accent:#38bdf8; --accent-2:#a78bfa; --term:#34d399; --warn:#fbbf24;
+    --code-bg:#0b1119; --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:linear-gradient(180deg,#0c141d,#0f1720 320px); color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  code,pre,kbd{font-family:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .wrap{max-width:960px;margin:0 auto;padding:0 20px 96px}
+
+  header.hero{padding:56px 0 28px;border-bottom:1px solid var(--line);margin-bottom:32px}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:12px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--accent);font-weight:700}
+  .eyebrow::before{content:"";width:22px;height:2px;background:var(--accent);border-radius:2px}
+  h1{font-size:34px;line-height:1.15;margin:14px 0 10px;letter-spacing:-.02em}
+  h1 span{color:var(--accent)}
+  .lede{color:var(--muted);max-width:70ch;margin:0}
+
+  .prereq{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px 20px;margin:26px 0 8px}
+  .prereq h3{margin:0 0 10px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .prereq ul{margin:0;padding-left:18px}
+  .prereq li{margin:5px 0;color:#cdd8e3;font-size:14.5px}
+  .prereq code{background:var(--panel-2);padding:2px 6px;border-radius:6px;font-size:13px;color:#e6edf3}
+
+  .step{position:relative;margin:30px 0;padding:24px 24px 8px;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--radius)}
+  .step-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:6px}
+  .num{flex:0 0 auto;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;
+    font-weight:800;color:#04121a;background:linear-gradient(145deg,var(--accent),#22a6dd);
+    box-shadow:0 4px 14px rgba(56,189,248,.28)}
+  .step h2{font-size:20px;margin:4px 0 2px;letter-spacing:-.01em}
+  .step .sub{color:var(--muted);font-size:14.5px;margin:0}
+
+  .block{margin:16px 0 18px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--code-bg)}
+  .block-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:8px 12px;background:var(--panel-2);border-bottom:1px solid var(--line)}
+  .badge{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:700;
+    letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:999px}
+  .badge.term{color:var(--term);background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.3)}
+  .badge.prompt{color:var(--accent-2);background:rgba(167,139,250,.12);border:1px solid rgba(167,139,250,.3)}
+  .badge .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+  .copy{cursor:pointer;border:1px solid var(--line);background:#0e1620;color:var(--ink);
+    font-size:12.5px;font-weight:600;padding:5px 12px;border-radius:8px;transition:.15s}
+  .copy:hover{border-color:var(--accent);color:var(--accent)}
+  .copy.copied{background:var(--term);border-color:var(--term);color:#052015}
+  pre{margin:0;padding:14px 16px;overflow-x:auto;font-size:13.5px;line-height:1.55;color:#dbe7f1}
+  pre .c{color:#6b8299}  /* comment */
+
+  .expect{display:flex;gap:9px;align-items:flex-start;margin:-4px 2px 16px;font-size:13.5px;color:var(--muted)}
+  .expect b{color:#bcd0e0;font-weight:600}
+  .expect .chip{flex:0 0 auto;color:var(--warn);font-weight:700}
+
+  .note{border-left:3px solid var(--accent-2);background:rgba(167,139,250,.07);
+    padding:12px 16px;border-radius:0 10px 10px 0;margin:10px 0 18px;font-size:14px;color:#cdd8e3}
+  .note b{color:#e6edf3}
+
+  footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--line);color:var(--muted);font-size:13.5px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">snapexe-oss skill</div>
+    <h1>OpenSearch <span>Backup &amp; Restore</span> Demo</h1>
+    <p class="lede">A full lifecycle walkthrough: inspect the source cluster, back it up to S3 with the
+      <code>snapexe-oss</code> skill, restore into a fresh destination, then tear everything down - each step
+      with a copy button. Credentials come from AWS Secrets Manager; AWS access uses the IAM-role credential chain.</p>
+
+    <div class="prereq">
+      <h3>Before you start</h3>
+      <ul>
+        <li>All four containers up: <code>os-source-hot</code>, <code>os-source-warm</code> (source, ports 9200/9202) and <code>os-dest-hot</code>, <code>os-dest-warm</code> (dest, 9201/9203).</li>
+        <li>AWS identity resolves via the credential chain - <code>aws sts get-caller-identity</code> returns account <code>765423874566</code>, region <code>us-west-2</code>.</li>
+        <li>Secret <code>snapexe/opensearch</code> exists in <code>us-west-2</code> (holds the <code>opensearch_source</code> / <code>opensearch_dest</code> creds).</li>
+        <li>Run all <span style="color:var(--term);font-weight:600">Terminal</span> steps from the repo dir, in the <b>same shell</b> so the password variables persist. Paste <span style="color:var(--accent-2);font-weight:600">Claude prompts</span> into Claude Code.</li>
+        <li>This demo assumes the destination starts with <b>only system indices</b> (a fresh dest). Tag used throughout: <code>demo</code>.</li>
+      </ul>
+    </div>
+  </header>
+
+  <!-- STEP 0 -->
+  <section class="step">
+    <div class="step-head">
+      <div class="num">0</div>
+      <div><h2>Set up the shell</h2><p class="sub">Pull each cluster&rsquo;s <code>user:password</code> from AWS Secrets Manager into a variable - the same secret the skill uses, read via the IAM-role credential chain. (Run from the repo directory.)</p></div>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; run once</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre><span class="c"># fetch admin user:password for each cluster from Secrets Manager</span>
+SCRED=$(aws secretsmanager get-secret-value --secret-id snapexe/opensearch --region us-west-2 --query SecretString --output text | python3 -c "import sys,json;c=json.load(sys.stdin)['opensearch_source'];print(c['username']+':'+c['password'])")
+DCRED=$(aws secretsmanager get-secret-value --secret-id snapexe/opensearch --region us-west-2 --query SecretString --output text | python3 -c "import sys,json;c=json.load(sys.stdin)['opensearch_dest'];print(c['username']+':'+c['password'])")</pre>
+    </div>
+    <div class="note"><b>Note:</b> this reads the credentials from Secrets Manager, matching how the skill authenticates - no local creds file needed. If you get <code>ResourceNotFoundException</code>, your shell is on a different account/region: check <code>aws sts get-caller-identity</code> (want <code>765423874566</code>) and keep <code>--region us-west-2</code>.</div>
+  </section>
+
+  <!-- STEP 1 -->
+  <section class="step">
+    <div class="step-head">
+      <div class="num">1</div>
+      <div><h2>Show what&rsquo;s in the source cluster</h2><p class="sub">List the nodes (hot / warm), the indices, the data streams, and the searchable-snapshot indices on the source (9200).</p></div>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; nodes (hot / warm)</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$SCRED" "https://localhost:9200/_cat/nodes?v&amp;h=name,node.roles,master"</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; indices</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$SCRED" "https://localhost:9200/_cat/indices?v&amp;s=index"</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; data streams</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$SCRED" "https://localhost:9200/_data_stream?pretty"</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; searchable snapshots</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$SCRED" "https://localhost:9200/_all/_settings/index.store.type?flat_settings=true" | jq</pre>
+    </div>
+    <p class="expect"><span class="chip">Expect</span><span>Two nodes - <code>os-source-hot</code> (<code>cluster_manager,data,ingest</code>) and <code>os-source-warm</code> (<code>warm</code>); <b>data</b> indices such as <code>logs</code>, <code>orders</code>, <code>users</code>; a <code>logs-datastream</code> data stream; and <code>logs-searchable</code> reported as <code>remote_snapshot</code>.</span></p>
+  </section>
+
+  <!-- STEP 2 -->
+  <section class="step">
+    <div class="step-head">
+      <div class="num">2</div>
+      <div><h2>Confirm the destination is empty</h2><p class="sub">Show the dest nodes (hot / warm) and confirm it contains only system indices before we restore into it.</p></div>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; nodes (hot / warm)</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$DCRED" "https://localhost:9201/_cat/nodes?v&amp;h=name,node.roles,master"</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; indices</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$DCRED" "https://localhost:9201/_cat/indices?v&amp;s=index"</pre>
+    </div>
+    <p class="expect"><span class="chip">Expect</span><span>Two nodes - <code>os-dest-hot</code> (<code>cluster_manager,data,ingest</code>) and <code>os-dest-warm</code> (<code>warm</code>); and <b>only system indices</b> (<code>.opendistro_security</code>, <code>.plugins-ml-config</code>, plus any auto-regenerated <code>security-auditlog-*</code> / <code>top_queries-*</code>). No <code>logs</code>/<code>orders</code>/data streams.</span></p>
+  </section>
+
+  <!-- STEP 3 -->
+  <section class="step">
+    <div class="step-head">
+      <div class="num">3</div>
+      <div><h2>Back up the source cluster</h2><p class="sub">Prompt Claude Code - the <code>snapexe-oss</code> skill provisions the S3 bucket + IAM user, installs the keystore keys on both source nodes, and starts the snapshot.</p></div>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge prompt"><span class="dot"></span>Prompt Claude Code</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>Using the snapexe-oss skill: back up my source OpenSearch cluster at
+https://localhost:9200 to S3 with tag "demo", using the Secrets Manager
+secret snapexe/opensearch for credentials. It is a 2-node cluster (Docker
+containers os-source-hot and os-source-warm) with no repository set up yet -
+provision the bucket + IAM user and install the keystore keys on both nodes,
+in us-west-2.</pre>
+    </div>
+    <p class="expect"><span class="chip">Expect</span><span>With no indices named, the backup covers the <b>whole cluster</b> - all hot indices <b>and data streams</b> (searchable snapshots are recorded for remap). Claude confirms it will create real AWS resources, provisions <code>snapexe-demo-*</code> (bucket + IAM user), installs keys on both nodes, and reports <b>&ldquo;Snapshot started&rdquo;</b>.</span></p>
+    <div class="note"><b>Why both nodes?</b> The repository is verified on every node, so the S3 keystore keys must be installed on <code>os-source-hot</code> <i>and</i> <code>os-source-warm</code>. The skill handles this; the single-node <code>--auto-provision</code> shortcut alone would fail verification on the warm node.</div>
+  </section>
+
+  <!-- STEP 4 -->
+  <section class="step">
+    <div class="step-head">
+      <div class="num">4</div>
+      <div><h2>Check the snapshot status</h2><p class="sub">Snapshots are asynchronous - confirm it reached <code>SUCCESS</code>.</p></div>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge prompt"><span class="dot"></span>Prompt Claude Code</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>Show me the status of the "demo" snapshot.</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal (equivalent)</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>.venv/bin/python opensearch_snapshot.py status --tag demo --secret-id snapexe/opensearch</pre>
+    </div>
+    <p class="expect"><span class="chip">Expect</span><span><b>State: SUCCESS</b> with 100% of shards complete.</span></p>
+  </section>
+
+  <!-- STEP 5 -->
+  <section class="step">
+    <div class="step-head">
+      <div class="num">5</div>
+      <div><h2>Restore into the destination cluster</h2><p class="sub">Prompt Claude Code to restore the snapshot into the dest (9201), including the data stream and searchable snapshot.</p></div>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge prompt"><span class="dot"></span>Prompt Claude Code</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>Using the snapexe-oss skill: restore the "demo" snapshot into the destination
+cluster at https://localhost:9201, including the data stream and the searchable
+snapshot. It is a 2-node cluster (os-dest-hot, os-dest-warm); use the secret
+snapexe/opensearch.</pre>
+    </div>
+    <p class="expect"><span class="chip">Expect</span><span>Claude registers the repo on the dest, restores the regular indices, restores <code>logs-datastream</code> via the superadmin cert, re-attaches <code>logs-searchable</code>, and reports <b>&ldquo;Restore started&rdquo;</b>.</span></p>
+  </section>
+
+  <!-- STEP 6 -->
+  <section class="step">
+    <div class="step-head">
+      <div class="num">6</div>
+      <div><h2>Check the restore status</h2><p class="sub">Restore is asynchronous - watch recovery, then confirm the data landed on the dest.</p></div>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; active recovery</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre><span class="c"># empty table once recovery is done</span>
+curl -sku "$DCRED" "https://localhost:9201/_cat/recovery?v&amp;active_only=true"</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; restored indices</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$DCRED" "https://localhost:9201/_cat/indices?v&amp;s=index"</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; restored data stream</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$DCRED" "https://localhost:9201/_data_stream?pretty"</pre>
+    </div>
+    <p class="expect"><span class="chip">Expect</span><span>Recovery drains to empty; the dest now shows <code>logs</code>, <code>orders</code>, <code>users</code>, <code>logs-searchable</code>, and the <code>logs-datastream</code> data stream - matching the source.</span></p>
+  </section>
+
+  <!-- STEP 7 -->
+  <section class="step">
+    <div class="step-head">
+      <div class="num">7</div>
+      <div><h2>Tear down the resources</h2><p class="sub">Prompt Claude Code to delete everything tag <code>demo</code> created, then verify each resource is gone.</p></div>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge prompt"><span class="dot"></span>Prompt Claude Code</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>Using the snapexe-oss skill: delete all the AWS and repository resources for
+tag "demo". Do a dry-run first, show me the preview, then delete.</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Verify &middot; S3 bucket gone</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre><span class="c"># expect no snapexe-demo line</span>
+aws s3 ls --region us-west-2 | grep snapexe-demo</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Verify &middot; IAM user gone</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre><span class="c"># expect a NoSuchEntity error</span>
+aws iam get-user --user-name snapexe-demo-user</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Verify &middot; config file gone</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre><span class="c"># expect "No such file"</span>
+ls -l snapexe-demo-config.json</pre>
+    </div>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Verify &middot; repo deregistered</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre><span class="c"># expect {} (empty)</span>
+curl -sku "$SCRED" "https://localhost:9200/_snapshot/snapexe-demo*?pretty"</pre>
+    </div>
+    <p class="expect"><span class="chip">Expect</span><span>No <code>snapexe-demo</code> bucket, <code>NoSuchEntity</code> for the IAM user, no config file, and <code>{}</code> for the repository - everything the tag created is gone.</span></p>
+    <div class="note"><b>Note:</b> <code>delete-all</code> deregisters the repo on the source (the config&rsquo;s endpoint) and removes the bucket/IAM/config. The <b>restored data on the dest</b> and the dest-side repo registration are left in place - remove those separately if you want a clean slate to re-run the demo.</div>
+  </section>
+
+  <footer>
+    <p>Driven by the <b>snapexe-oss</b> skill &middot; <code>opensearch_snapshot.py</code> &middot; <code>restore.py</code> &middot; <code>delete_all.py</code>.
+    OpenSearch credentials come from AWS Secrets Manager (<code>--secret-id snapexe/opensearch</code>); AWS access uses the IAM-role credential chain (no static keys on disk).</p>
+  </footer>
+
+</div>
+
+<script>
+  function copyBlock(btn){
+    var block = btn.closest('.block');
+    var text = block.querySelector('pre').textContent;
+    function done(){ var old = btn.textContent; btn.textContent='Copied!'; btn.classList.add('copied');
+      setTimeout(function(){ btn.textContent=old; btn.classList.remove('copied'); }, 1400); }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done).catch(fallback);
+    } else { fallback(); }
+    function fallback(){
+      var ta=document.createElement('textarea'); ta.value=text;
+      ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.focus(); ta.select();
+      try{ document.execCommand('copy'); }catch(e){}
+      document.body.removeChild(ta); done();
+    }
+  }
+</script>
+</body>
+</html>
