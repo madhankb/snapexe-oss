@@ -174,6 +174,12 @@ def test_parse_restore_rejects_user():
         restore.parse_arguments(["--tag", "prod", "--endpoint", "https://target:9200", "--user", "admin"])
 
 
+def test_parse_restore_accepts_secret_id():
+    args = restore.parse_arguments(["--tag", "prod", "--endpoint", "https://h:9200",
+                                    "--secret-id", "snapexe/opensearch"])
+    assert args.secret_id == "snapexe/opensearch"
+
+
 def test_run_restore_missing_config_exits_2(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _write_creds(tmp_path, {"opensearch_dest": {"username": "admin", "password": "secret"}})

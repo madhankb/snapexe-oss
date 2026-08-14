@@ -29,11 +29,11 @@ from urllib.parse import urljoin, urlparse
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from opensearch_snapshot import (
-    apply_aws_creds_from_file,
     build_repository_body,
     create_iam_user_with_keys,
     ensure_repository_s3,
     install_keystore_key,
+    load_creds,
     register_repository,
     reload_secure_settings,
 )
@@ -392,8 +392,8 @@ def run_restore(args, *, session_factory=create_session, boto3_module=None):
         logger.error(str(exc))
         return 2
     try:
-        file_creds = load_creds_file(args.creds_file)
-        username, password = resolve_credentials(file_creds, "opensearch_dest")
+        creds = load_creds(getattr(args, "secret_id", None), args.creds_file, boto3_module)
+        username, password = resolve_credentials(creds, "opensearch_dest")
     except (FileNotFoundError, ValueError) as exc:
         logger.error(str(exc))
         return 2
@@ -425,7 +425,6 @@ def run_restore(args, *, session_factory=create_session, boto3_module=None):
         if config.get("repo_type") != "s3":
             logger.error("--install-container only applies to s3 snapshots")
             return 2
-        apply_aws_creds_from_file(file_creds)
         if not ingest_dest_keystore(config, session, endpoint, install_container, boto3_module):
             logger.error("Destination keystore ingest failed")
             return 1
@@ -500,9 +499,8 @@ def run_restore(args, *, session_factory=create_session, boto3_module=None):
             return 1
         print(f"Searchable remaps completed: {len(remaps)}")
     print(
-        f"Monitor recovery with (reads the dest password from {args.creds_file}):\n"
-        f"  PW=$(python3 -c \"import json;print(json.load(open('{args.creds_file}'))['opensearch_dest']['password'])\")\n"
-        f"  curl -ku \"{username}:$PW\" \"{endpoint}/_cat/recovery?v\"\n"
+        "Monitor recovery with:\n"
+        f"  curl -ku \"{username}:<password>\" \"{endpoint}/_cat/recovery?v\"\n"
     )
     return 0
 
@@ -519,6 +517,8 @@ def parse_arguments(argv=None):
     parser.add_argument("--tag", required=True)
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--creds-file", dest="creds_file", default=DEFAULT_CREDS_FILE)
+    parser.add_argument("--secret-id", dest="secret_id",
+                        help="AWS Secrets Manager secret holding OpenSearch creds; overrides --creds-file")
     parser.add_argument("--indices")
     parser.add_argument("--install-container", dest="install_container",
                         help="s3 only: on this destination container, install repository-s3 if "
