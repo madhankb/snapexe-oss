@@ -597,6 +597,8 @@ def parse_arguments(argv=None):
     snap.add_argument("--endpoint", required=True)
     snap.add_argument("--repo-type", dest="repo_type", required=True, choices=["fs", "s3"])
     snap.add_argument("--creds-file", dest="creds_file", default=DEFAULT_CREDS_FILE)
+    snap.add_argument("--secret-id", dest="secret_id",
+                      help="AWS Secrets Manager secret holding OpenSearch creds; overrides --creds-file")
     snap.add_argument("--indices")
     snap.add_argument("--repository")
     snap.add_argument("--snapshot-name", dest="snapshot_name")
@@ -622,6 +624,8 @@ def parse_arguments(argv=None):
     stat = sub.add_parser("status", help="Report progress of the last snapshot")
     stat.add_argument("--tag", required=True)
     stat.add_argument("--creds-file", dest="creds_file", default=DEFAULT_CREDS_FILE)
+    stat.add_argument("--secret-id", dest="secret_id",
+                      help="AWS Secrets Manager secret holding OpenSearch creds; overrides --creds-file")
     stat.add_argument("--endpoint")
     stat.add_argument("--debug", action="store_true")
 
@@ -707,12 +711,6 @@ def provision_backend(tag, endpoint, region_arg, bucket_arg, boto3_module):
 
 
 def run_provision(args, *, boto3_module=None):
-    try:
-        file_creds = load_creds_file(args.creds_file)
-    except (FileNotFoundError, ValueError) as exc:
-        logger.error(str(exc))
-        return 2
-    apply_aws_creds_from_file(file_creds)
     if boto3_module is None:
         import boto3 as boto3_module
     config, keys = provision_backend(args.tag, args.endpoint, args.region, args.bucket, boto3_module)
@@ -762,8 +760,8 @@ def _auto_provision(args, session, endpoint, boto3_module=None):
 
 def run_snapshot(args, *, session_factory=create_session, boto3_module=None):
     try:
-        file_creds = load_creds_file(args.creds_file)
-        username, password = resolve_credentials(file_creds, "opensearch_source")
+        creds = load_creds(getattr(args, "secret_id", None), args.creds_file, boto3_module)
+        username, password = resolve_credentials(creds, "opensearch_source")
     except (FileNotFoundError, ValueError) as exc:
         logger.error(str(exc))
         return 2
@@ -843,8 +841,8 @@ def run_status(args, *, session_factory=create_session):
         logger.error(str(exc))
         return 2
     try:
-        file_creds = load_creds_file(args.creds_file)
-        username, password = resolve_credentials(file_creds, "opensearch_source")
+        creds = load_creds(getattr(args, "secret_id", None), args.creds_file)
+        username, password = resolve_credentials(creds, "opensearch_source")
     except (FileNotFoundError, ValueError) as exc:
         logger.error(str(exc))
         return 2

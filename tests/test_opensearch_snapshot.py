@@ -439,6 +439,17 @@ def test_parse_snapshot_requires_repo_type():
         oss.parse_arguments(["snapshot", "--tag", "prod", "--endpoint", "https://h:9200"])
 
 
+def test_parse_snapshot_accepts_secret_id():
+    args = oss.parse_arguments(["snapshot", "--tag", "prod", "--endpoint", "https://h:9200",
+                                "--repo-type", "fs", "--secret-id", "snapexe/opensearch"])
+    assert args.secret_id == "snapexe/opensearch"
+
+
+def test_parse_status_accepts_secret_id():
+    args = oss.parse_arguments(["status", "--tag", "prod", "--secret-id", "snapexe/opensearch"])
+    assert args.secret_id == "snapexe/opensearch"
+
+
 def _snapshot_args(tmp_path, **overrides):
     import argparse
     base = dict(
