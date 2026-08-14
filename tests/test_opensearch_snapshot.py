@@ -86,6 +86,26 @@ def test_discover_hot_indices_returns_empty_on_error():
     assert oss.discover_hot_indices(session, "https://host:9200") == []
 
 
+def test_discover_data_streams_returns_names():
+    session = MagicMock()
+    session.get.return_value = _json_response(
+        {"data_streams": [{"name": "logs-datastream"}, {"name": "metrics-ds"}]}
+    )
+    assert oss.discover_data_streams(session, "https://host:9200") == ["logs-datastream", "metrics-ds"]
+
+
+def test_discover_data_streams_empty_when_none():
+    session = MagicMock()
+    session.get.return_value = _json_response({"data_streams": []})
+    assert oss.discover_data_streams(session, "https://host:9200") == []
+
+
+def test_discover_data_streams_empty_on_error():
+    session = MagicMock()
+    session.get.return_value = _json_response({}, status=500)
+    assert oss.discover_data_streams(session, "https://host:9200") == []
+
+
 def test_compute_progress_in_progress():
     payload = {
         "snapshot": "snap-1",
@@ -443,10 +463,11 @@ def test_run_snapshot_fs_happy_path(tmp_path, monkeypatch):
     )
 
     session = MagicMock()
-    # _cat/indices, then _all/_settings, then _snapshot/_status (proceed check)
+    # _cat/indices, _all/_settings, _data_stream, then _snapshot/_status (proceed check)
     session.get.side_effect = [
         _json_response([{"index": "logs"}]),
         _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
+        _json_response({"data_streams": []}),
         _json_response({"snapshots": []}),
     ]
     session.put.side_effect = [
@@ -481,6 +502,7 @@ def test_run_snapshot_needs_only_source_block(tmp_path, monkeypatch):
     session.get.side_effect = [
         _json_response([{"index": "logs"}]),
         _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
+        _json_response({"data_streams": []}),
         _json_response({"snapshots": []}),
     ]
     session.put.side_effect = [
@@ -489,6 +511,30 @@ def test_run_snapshot_needs_only_source_block(tmp_path, monkeypatch):
     ]
     rc = oss.run_snapshot(_snapshot_args(tmp_path), session_factory=lambda u, p: session)
     assert rc == 0  # no opensearch_dest block present, snapshot still works
+
+
+def test_run_snapshot_default_includes_data_streams(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "snapexe-creds.json").write_text(
+        '{"opensearch_source": {"username": "admin", "password": "secret"}}'
+    )
+    session = MagicMock()
+    session.get.side_effect = [
+        _json_response([{"index": "logs"}]),                                   # _cat/indices
+        _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),    # store types
+        _json_response({"data_streams": [{"name": "logs-datastream"}]}),       # _data_stream
+        _json_response({"snapshots": []}),                                     # proceed check
+    ]
+    session.put.side_effect = [
+        _json_response({"acknowledged": True}),          # register repo
+        _json_response({"task": "task-1"}, status=202),  # snapshot
+    ]
+    rc = oss.run_snapshot(_snapshot_args(tmp_path), session_factory=lambda u, p: session)
+    assert rc == 0
+    # With no --indices, the snapshot body must include both the regular index and the data stream
+    snapshot_body = session.put.call_args_list[1].kwargs["json"]
+    assert "logs" in snapshot_body["indices"]
+    assert "logs-datastream" in snapshot_body["indices"]
 
 
 def test_run_status_reports_percent(tmp_path, monkeypatch, capsys):
@@ -578,6 +624,7 @@ def test_run_snapshot_s3_registers_from_config(tmp_path, monkeypatch):
         _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
         _json_response([{"index": "logs"}]),
         _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
+        _json_response({"data_streams": []}),
         _json_response({"snapshots": []}),
     ]
     session.put.side_effect = [
@@ -672,6 +719,7 @@ def test_auto_provision_happy_path(tmp_path, monkeypatch):
         _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
         _json_response([{"index": "logs"}]),
         _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
+        _json_response({"data_streams": []}),
         _json_response({"snapshots": []}),
     ]
     session.put.side_effect = [

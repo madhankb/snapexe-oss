@@ -3,9 +3,10 @@
 Takes an asynchronous snapshot of a self-managed OpenSearch cluster's hot indices
 into a filesystem (`fs`) or S3 (`s3`) repository, and reports snapshot progress.
 
-Built for open-source (self-managed) OpenSearch using its public snapshot APIs. It
-snapshots only regular ("hot") indices and skips searchable-snapshot indices, which
-cannot be re-snapshotted.
+Built for open-source (self-managed) OpenSearch using its public snapshot APIs. With no
+`--indices`, it backs up the whole cluster - all regular ("hot") indices plus all data
+streams (by name) - and skips searchable-snapshot indices, which cannot be re-snapshotted
+(their remap pointers are recorded for restore instead).
 
 ## Requirements
 

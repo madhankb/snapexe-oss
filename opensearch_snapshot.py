@@ -90,6 +90,26 @@ def discover_hot_indices(session, endpoint):
         return []
 
 
+def discover_data_streams(session, endpoint):
+    """Return the names of all data streams on the cluster.
+
+    Data streams are snapshotted by name (OpenSearch captures their backing indices and
+    the stream definition); default index discovery deliberately skips the raw .ds-*
+    backing indices, so the data-stream names are discovered here and added to the backup.
+    Best-effort: returns [] on any HTTP error.
+    """
+    try:
+        resp = session.get(urljoin(endpoint + "/", "_data_stream"), verify=False, timeout=30)
+        if resp.status_code != 200:
+            logger.error("Failed to list data streams: %s", resp.status_code)
+            return []
+        names = [ds.get("name", "") for ds in resp.json().get("data_streams", [])]
+        return [n for n in names if n]
+    except Exception as exc:
+        logger.error("Exception discovering data streams: %s", exc)
+        return []
+
+
 def gather_searchable_remaps(session, endpoint):
     """Return remap info for each searchable-snapshot (remote_snapshot) index on the cluster.
 
@@ -778,7 +798,9 @@ def run_snapshot(args, *, session_factory=create_session, boto3_module=None):
     elif args.dry_run:
         indices = ["<discovered-at-runtime>"]
     else:
-        indices = discover_hot_indices(session, endpoint)
+        # No --indices: back up the whole cluster - regular hot indices plus data streams
+        # (by name). Searchable-snapshot indices are excluded here and remapped on restore.
+        indices = discover_hot_indices(session, endpoint) + discover_data_streams(session, endpoint)
 
     if not indices and not args.dry_run:
         logger.error("No hot indices to snapshot")
