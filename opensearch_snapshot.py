@@ -6,7 +6,6 @@ Restore is a separate script - see restore.py.
 import argparse
 import json
 import logging
-import os
 import random
 import string
 import subprocess
@@ -249,16 +248,6 @@ def load_creds(secret_id, creds_file, boto3_module=None):
     if secret_id:
         return load_secret_creds(secret_id, boto3_module)
     return load_creds_file(creds_file)
-
-
-def apply_aws_creds_from_file(file_creds):
-    aws = file_creds.get("aws", {})
-    if aws.get("access_key_id"):
-        os.environ["AWS_ACCESS_KEY_ID"] = aws["access_key_id"]
-    if aws.get("secret_access_key"):
-        os.environ["AWS_SECRET_ACCESS_KEY"] = aws["secret_access_key"]
-    if aws.get("region"):
-        os.environ["AWS_DEFAULT_REGION"] = aws["region"]
 
 
 def resolve_credentials(file_creds, section):

@@ -228,32 +228,6 @@ def test_resolve_credentials_missing_password_raises():
         oss.resolve_credentials({"opensearch_source": {"username": "admin"}}, "opensearch_source")
 
 
-def test_apply_aws_creds_sets_env(monkeypatch):
-    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
-    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
-    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
-    oss.apply_aws_creds_from_file({"aws": {"access_key_id": "AK", "secret_access_key": "SK", "region": "us-east-1"}})
-    import os
-    assert os.environ["AWS_ACCESS_KEY_ID"] == "AK"
-    assert os.environ["AWS_SECRET_ACCESS_KEY"] == "SK"
-    assert os.environ["AWS_DEFAULT_REGION"] == "us-east-1"
-
-
-def test_apply_aws_creds_overwrites_existing(monkeypatch):
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "OLD")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "OLD")
-    oss.apply_aws_creds_from_file({"aws": {"access_key_id": "NEW", "secret_access_key": "SK"}})
-    import os
-    assert os.environ["AWS_ACCESS_KEY_ID"] == "NEW"
-
-
-def test_apply_aws_creds_no_section_leaves_env(monkeypatch):
-    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
-    oss.apply_aws_creds_from_file({"opensearch_source": {"username": "a", "password": "b"}})
-    import os
-    assert "AWS_ACCESS_KEY_ID" not in os.environ
-
-
 def test_create_session_sets_basic_auth():
     session = oss.create_session("admin", "secret")
     assert session.auth == ("admin", "secret")
