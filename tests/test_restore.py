@@ -422,6 +422,38 @@ def test_run_restore_install_container_ingests_keystore(tmp_path, monkeypatch):
     assert session.post.call_count == 2  # reload, then restore
 
 
+def test_ingest_dest_keystore_includes_searchable_backing_buckets(monkeypatch):
+    captured = {}
+
+    def fake_create(iam, user, buckets):
+        captured["user"] = user
+        captured["buckets"] = buckets
+        return {"access_key_id": "AKIA", "secret_access_key": "sek"}
+
+    monkeypatch.setattr(restore, "create_iam_user_with_keys", fake_create)
+    monkeypatch.setattr(restore, "install_keystore_key", lambda *a, **k: None)
+    monkeypatch.setattr(restore, "reload_secure_settings", lambda *a, **k: True)
+
+    config = {
+        "tag": "nightly",
+        "bucket": "snapexe-nightly-224c",
+        "searchable_snapshots": [
+            {"bucket": "snapexe-ss-vsqw"},
+            {"bucket": "snapexe-ss-vsqw"},  # duplicate -> should be deduped
+        ],
+    }
+    ok = restore.ingest_dest_keystore(
+        config, MagicMock(), "https://localhost:9201", "os-dest-hot",
+        boto3_module=MagicMock(),
+    )
+    assert ok is True
+    assert captured["user"] == "snapexe-nightly-user"
+    # tag bucket first, then the (deduped) searchable backing bucket
+    assert captured["buckets"][0] == "snapexe-nightly-224c"
+    assert "snapexe-ss-vsqw" in captured["buckets"]
+    assert captured["buckets"].count("snapexe-ss-vsqw") == 1
+
+
 def test_run_restore_s3_aborts_when_plugin_unavailable(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _write_creds(tmp_path, {"opensearch_dest": {"username": "admin", "password": "secret"}})

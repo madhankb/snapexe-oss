@@ -211,9 +211,18 @@ def ingest_dest_keystore(config, session, endpoint, container, boto3_module=None
     if boto3_module is None:
         import boto3 as boto3_module
     tag = config.get("tag")
+    # The tag user's key backs both the tag repo and any searchable-snapshot backing
+    # repos on restore. Grant it read access to the backing buckets too, so the remap's
+    # probe reuses this one key instead of minting against the (often maxed-out) backing
+    # IAM user - the mint against that user is what hits IAM's 2-key limit.
+    buckets = [config.get("bucket")]
+    for remap in config.get("searchable_snapshots") or []:
+        backing_bucket = remap.get("bucket")
+        if backing_bucket and backing_bucket not in buckets:
+            buckets.append(backing_bucket)
     try:
         keys = create_iam_user_with_keys(
-            boto3_module.client("iam"), f"snapexe-{tag}-user", config.get("bucket")
+            boto3_module.client("iam"), f"snapexe-{tag}-user", buckets
         )
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "LimitExceeded":
@@ -280,8 +289,10 @@ def _ensure_backing_repo(m, session, endpoint, dest_containers, boto3_module):
         "s3", bucket=m["bucket"], base_path=m.get("base_path"), region=m.get("region"),
     )
     backing_repo = m["backing_repository"]
-    # 1. Probe: register with whatever credentials the destination already has (no retry).
-    if register_repository(session, endpoint, backing_repo, body, retries=0):
+    # 1. Probe: register with the dest's existing credentials. With the tag user's key
+    # scoped to include this backing bucket (see ingest_dest_keystore), this is the
+    # expected success path; the retries tolerate IAM policy-propagation lag.
+    if register_repository(session, endpoint, backing_repo, body, retries=3):
         return True
     # 2. Not accessible - need to install the backing bucket's key on the dest node(s).
     if not dest_containers:
@@ -303,7 +314,16 @@ def _ensure_backing_repo(m, session, endpoint, dest_containers, boto3_module):
     try:
         keys = create_iam_user_with_keys(boto3_module.client("iam"), user_name, m["bucket"])
     except ClientError as exc:
-        logger.error("Could not mint key for backing user %s: %s", user_name, exc)
+        if exc.response.get("Error", {}).get("Code") == "LimitExceeded":
+            logger.error(
+                "Backing IAM user %s is at the 2-key limit, so no key could be minted for "
+                "backing bucket '%s'. Grant read access to '%s' to the tag's destination IAM "
+                "user (whose key is installed in the dest keystore) so the remap can reuse it, "
+                "or free an unused key on %s.",
+                user_name, m["bucket"], m["bucket"], user_name,
+            )
+        else:
+            logger.error("Could not mint key for backing user %s: %s", user_name, exc)
         return False
     try:
         for c in dest_containers:

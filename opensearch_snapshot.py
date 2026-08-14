@@ -365,18 +365,27 @@ def create_iam_user_with_keys(iam_client, user_name, bucket_name):
         else:
             raise
 
+    # bucket_name may be a single bucket or a list of buckets (the restore side passes
+    # the tag bucket plus any searchable-snapshot backing buckets). Grant access to all
+    # of them; keep a plain string Resource for the common single-bucket case.
+    buckets = [bucket_name] if isinstance(bucket_name, str) else list(bucket_name)
+
+    def _resource(suffix):
+        arns = [f"arn:aws:s3:::{b}{suffix}" for b in buckets]
+        return arns[0] if len(arns) == 1 else arns
+
     policy = {
         "Version": "2012-10-17",
         "Statement": [
             {
                 "Effect": "Allow",
                 "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
-                "Resource": f"arn:aws:s3:::{bucket_name}",
+                "Resource": _resource(""),
             },
             {
                 "Effect": "Allow",
                 "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-                "Resource": f"arn:aws:s3:::{bucket_name}/*",
+                "Resource": _resource("/*"),
             },
         ],
     }

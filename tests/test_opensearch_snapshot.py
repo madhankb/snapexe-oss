@@ -316,6 +316,25 @@ def test_create_iam_user_with_keys_returns_credentials():
     assert "snapexe-prod-a1b2" in policy_doc
 
 
+def test_create_iam_user_with_keys_multi_bucket_policy():
+    iam = MagicMock()
+    iam.create_access_key.return_value = {
+        "AccessKey": {"AccessKeyId": "AKIA123", "SecretAccessKey": "secret456"}
+    }
+    oss.create_iam_user_with_keys(
+        iam, "snapexe-nightly-user", ["snapexe-nightly-224c", "snapexe-ss-vsqw"]
+    )
+    policy = json.loads(iam.put_user_policy.call_args.kwargs["PolicyDocument"])
+    resources = []
+    for stmt in policy["Statement"]:
+        res = stmt["Resource"]
+        resources.extend(res if isinstance(res, list) else [res])
+    assert "arn:aws:s3:::snapexe-nightly-224c" in resources
+    assert "arn:aws:s3:::snapexe-ss-vsqw" in resources
+    assert "arn:aws:s3:::snapexe-nightly-224c/*" in resources
+    assert "arn:aws:s3:::snapexe-ss-vsqw/*" in resources
+
+
 def test_keystore_instructions_mentions_both_keys_and_reload():
     text = oss.keystore_instructions("AKIA123", "secret456")
     assert "s3.client.default.access_key" in text
