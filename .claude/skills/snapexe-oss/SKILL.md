@@ -28,8 +28,8 @@ right command, run it, enforce the safety rules, and report a short, honest summ
 ## Environment & prerequisites
 
 - **Run from the snapexe-oss repo directory** - the folder containing `opensearch_snapshot.py`,
-  `restore.py`, `delete_all.py`. On this machine that is `/Users/mkbn/Public/hackathon`. Config and
-  credential files are read/written relative to the current directory, so always `cd` there first.
+  `restore.py`, `delete_all.py`. Config and credential files are read/written relative to the current
+  directory, so always `cd` there first.
 - **Invoke the tool** with the `snapexe-oss` command if it's on PATH; otherwise run the scripts with
   the repo's virtualenv Python: `.venv/bin/python opensearch_snapshot.py ...`,
   `.venv/bin/python restore.py ...`, `.venv/bin/python delete_all.py ...`. Both forms are equivalent.
@@ -186,9 +186,9 @@ snapexe-oss status --tag <tag>
 **Whenever the user asks about a snapshot's status, run this command live** - it queries the cluster's
 `_status` API. Never answer from memory or a previous run; re-run it each time.
 
-Render the result as a **heatmap** - same `▓` (done) / `░` (remaining) bar style as the check-capacity
-skill - one row per index. Each bar is 20 chars: `fill = round(done / total * 20)`, `▓` repeated fill
-times then `░` for the remaining `20 - fill`. Add the shard count and the plain-text state (SUCCESS /
+Render the result as a **heatmap** - a `▓` (done) / `░` (remaining) bar, one row per index. Each bar is
+20 chars: `fill = round(done / total * 20)`, `▓` repeated fill times then `░` for the remaining
+`20 - fill`. Add the shard count and the plain-text state (SUCCESS /
 IN_PROGRESS / FAILED / PENDING - no glyphs). Lead with an overall line + overall bar. Show only this -
 no raw logs:
 
