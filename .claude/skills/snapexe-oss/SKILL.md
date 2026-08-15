@@ -43,7 +43,7 @@ right command, run it, enforce the safety rules, and report a short, honest summ
   if unsure.
 - **Every operation is keyed by `--tag`.** The tag names the resources (`snapexe-{tag}-*` bucket, repo,
   IAM user) and the config file `snapexe-{tag}-config.json`. Reuse the same tag across the lifecycle
-  (snapshot → status → restore → delete-all). If the user doesn't give a tag, ask for one or propose a
+  (snapshot -> status -> restore -> delete-all). If the user doesn't give a tag, ask for one or propose a
   short descriptive default.
 
 ## Safety rules (read first - these are non-negotiable)
@@ -54,29 +54,91 @@ actions:
 1. **Destructive ops need a dry-run + explicit confirmation.** For `delete-all`, ALWAYS run `--dry-run`
    first, show the user the preview of what will be deleted, and get an explicit "yes" before the real
    run. Do not pass `--yes` (skip-prompt) unless the user has clearly authorized skipping confirmation.
-2. **AWS-creating ops need confirmation.** `snapshot --auto-provision` and `provision` mint a real S3
-   bucket + IAM user + access keys via the user's AWS credentials. Say so and confirm the user wants
-   real AWS resources created, unless they've already made that clear this turn.
+2. **Backups provision by default - do NOT prompt.** A "back up my cluster" request implies
+   provisioning, so `snapshot --auto-provision` (and `provision`) may create a real S3 bucket + IAM user
+   + access keys and **proceed without a separate yes/no**. Don't stop to ask - just run it, then list
+   exactly what was created in the summary (see Output discipline). Only `delete-all` still needs
+   confirmation (rule #1).
 3. **Never echo secrets.** Don't print `snapexe-creds.json` contents, Secrets Manager values, passwords,
    or access keys. The tool never logs them; you shouldn't either.
-4. **Report outcomes faithfully.** Check the exit code and the printed result. If a command fails or
-   logs an error, say so with the key error line - never claim a snapshot/restore succeeded that you
-   didn't verify (for snapshots, confirm via `status` that state is `SUCCESS`).
+4. **Report outcomes faithfully; don't wait for a snapshot to finish.** Check the exit code and printed
+   result; if a command fails, say so with the key error line. A snapshot is asynchronous and can run for
+   hours or days - once it's **initiated**, report it as *started* (never claim it "completed" or
+   "SUCCESS") and point the user to `status`. Do NOT poll or block waiting for completion.
 5. **Confirm the target when it's outward-facing.** For restore and delete-all, make sure `--endpoint`
    / `--tag` point at the intended cluster. If you can't tell whether a cluster is production, assume it
    is and ask.
 
-## Output discipline (limited logs)
+## Output discipline (natural language, no logs, no emojis)
 
-The tools emit INFO logs and progress lines. Do **not** paste raw multi-line logs back to the user.
-Run the command, read its output, and report a **one-to-three-line summary**: what happened, the key
-result, and the next step. Surface a warning or error only when it changes the outcome.
+The user must see **only clean, natural-language output** - never the tool's INFO logs, curl/docker
+output, or pre-flight commands. **Do not use emojis or decorative glyphs anywhere in this skill.**
 
-Good summaries:
-- `Snapshot started (tag=prod): 5 indices, skipped 1 searchable. Track with status.`
-- `Snapshot state: SUCCESS - 5/5 shards.`
-- `Restored to dest: logs, orders, users (100 each) + logs-searchable remapped to the warm node.`
-- `delete-all (tag=prod): dry run shows bucket snapexe-prod-a1b2, IAM user snapexe-prod-user, repo, config. Confirm to delete.`
+- **Suppress the tool's logs.** Run the CLI with output redirected to a temp file, e.g.
+  `snapexe-oss snapshot ... > /tmp/snapexe-<tag>.out 2>&1`, then read that file yourself and present only
+  the summary below. Raw INFO/log lines must not appear in the chat.
+- **No visible pre-flight.** Don't run separate orienting commands (`ls`, `docker ps`,
+  `curl _cat/nodes`, creds/config peeks) as their own steps, and don't narrate ("I'll run a few
+  checks..."). Run the single command you need and let the tool orient itself.
+- **Hide all plumbing.** Never mention docker containers, node names (os-source-hot/warm), keystore
+  keys, plugin installs, reloads, retries, or shard-level internals. Report only what the user cares
+  about: what was captured, where it lives, how to check progress. (Never write a line like "keyed both
+  source nodes (os-source-hot, os-source-warm)".)
+- **Don't claim completion.** Snapshot and restore are asynchronous - report them as *started* and point
+  to the progress check; never say "completed"/"SUCCESS" without a live status/recovery query.
+
+Present a short heading and grouped facts - reproduce these templates, plain text only.
+
+Snapshot started (from scratch):
+
+```
+Snapshot started - tag "maha"
+
+  Snapshot   snapexe-maha-hotsnapshot-2026-08-14-22-38-44
+  Captured   10 indices (incl. the logs-datastream data stream); 1 searchable snapshot remapped for restore
+
+  Created in AWS
+    S3 bucket    snapexe-maha-mq19
+    IAM user     snapexe-maha-user
+    Repository   snapexe-maha-repo-mq19
+
+  Snapshots run in the background and can take a while.
+  Check progress:  snapexe-oss status --tag maha
+```
+
+Restore started:
+
+```
+Restore started - tag "maha" to https://localhost:9201
+
+  Restoring   logs, orders, users + logs-datastream (data stream) + logs-searchable (searchable, remapped)
+  Skipped     2 indices already on the target
+
+  Recovery runs in the background. Ask for restore progress to see the heatmap.
+```
+
+delete-all - dry-run preview, then the confirmed delete:
+
+```
+delete-all (dry run) - tag "maha" - would delete:
+
+  Repository + snapshots     snapexe-maha-repo-mq19
+  S3 bucket                  snapexe-maha-mq19
+  IAM user (+ keys/policy)   snapexe-maha-user
+  Config file                snapexe-maha-config.json
+
+  Confirm to run the real delete.
+```
+```
+Deleted - tag "maha"
+
+  Repository + snapshots         removed
+  S3 bucket snapexe-maha-mq19    removed
+  IAM user snapexe-maha-user     removed
+  Config file                    removed
+```
+
+(status and restore progress use the plain ▓/░ heatmap shown in their workflow sections.)
 
 ## Workflows
 
@@ -103,7 +165,7 @@ snapexe-oss snapshot --tag <tag> --endpoint <source-url> --repo-type s3 \
   IAM user + keys, installs `repository-s3` on any node missing it (restarting those nodes), installs the
   keystore keys on every discovered node, reloads, then snapshots. Both the plugin check and the key
   install are per-node, so single- and multi-node clusters work from one anchor. It creates real AWS
-  resources → apply safety rule #2.
+  resources - apply safety rule #2.
 - **Multi-node source (automatic):** repo verification runs on every node, so all nodes need the S3 keys.
   With `--auto-provision` the tool auto-discovers the nodes (mapping each cluster node name to a same-named
   docker container) and keys each one before the single cluster-wide reload - single- and multi-node both
@@ -112,14 +174,35 @@ snapexe-oss snapshot --tag <tag> --endpoint <source-url> --repo-type s3 \
   override discovery. (Restore's equivalent is `--dest-containers`.) An un-keyed node fails verification
   with "The AWS Access Key Id you provided does not exist in our records".
 - `--dry-run` previews without changes. For `fs` repositories use `--repo-type fs --repo-path <dir>`.
-- Snapshot is asynchronous. After it starts, run **status** to confirm completion.
+- Snapshot is asynchronous and may run for hours or days. Once it's **initiated**, stop there - report
+  it as started (with the clean summary above) and point the user to `status`. Do NOT wait or poll for
+  completion.
 
 ### 2. Status (progress)
 
 ```bash
 snapexe-oss status --tag <tag>
 ```
-Report `state` and overall percent (e.g. `SUCCESS - 5/5 shards`). Poll again if it's `IN_PROGRESS`.
+**Whenever the user asks about a snapshot's status, run this command live** - it queries the cluster's
+`_status` API. Never answer from memory or a previous run; re-run it each time.
+
+Render the result as a **heatmap** - same `▓` (done) / `░` (remaining) bar style as the check-capacity
+skill - one row per index. Each bar is 20 chars: `fill = round(done / total * 20)`, `▓` repeated fill
+times then `░` for the remaining `20 - fill`. Add the shard count and the plain-text state (SUCCESS /
+IN_PROGRESS / FAILED / PENDING - no glyphs). Lead with an overall line + overall bar. Show only this -
+no raw logs:
+
+```
+Snapshot status - tag "maha" - IN_PROGRESS, 16/20 shards (80%)
+
+Overall  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░  80%
+
+INDEX                         PROGRESS               SHARDS  STATE
+logs                          ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓   2/2    SUCCESS
+orders                        ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓   2/2    SUCCESS
+users                         ▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░   1/2    IN_PROGRESS
+.ds-logs-datastream-000001    ░░░░░░░░░░░░░░░░░░░░   0/1    PENDING
+```
 
 ### 3. Restore (into a target/destination cluster)
 
@@ -142,7 +225,28 @@ snapexe-oss restore --tag <tag> --endpoint <dest-url> \
 - **Searchable snapshots** recorded at snapshot time are auto-recreated on the target by re-pointing at
   the same S3 backing snapshot (`--dest-containers` names the dest nodes for key install). Dest needs a
   warm/search-role node.
-- Restore is fire-and-forget for regular indices; the tool prints a `_cat/recovery` curl to monitor.
+- Restore is asynchronous (fire-and-forget) - like a snapshot, report it as *started*, don't wait for
+  recovery to finish.
+
+**Restore progress uses the same heatmap.** Whenever the user asks how a restore is going, query the
+dest's recovery API live and render the **same `▓`/`░` heatmap** as status - one row per index, bar from
+the recovery percent (`fill = round(bytes_percent / 100 * 20)`), plain-text state (done / recovering /
+pending - no glyphs):
+
+```bash
+curl -sku "<dest-creds>" "<dest-url>/_cat/recovery?v&active_only=false&format=json&h=index,stage,bytes_percent"
+```
+Aggregate shards to one bar per index (use the min bytes_percent across an index's shards; `stage=done`
+means 100%). Lead with an overall line, e.g.:
+
+```
+Restore progress - tag "maha" to https://localhost:9201 - 3/5 indices done
+
+INDEX                         RECOVERY               %      STATE
+logs                          ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  100%   done
+users                         ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░   67%   recovering
+orders                        ░░░░░░░░░░░░░░░░░░░░    0%   pending
+```
 
 ### 4. Delete-all (tear down a tag's resources)
 

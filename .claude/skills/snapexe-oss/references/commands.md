@@ -14,7 +14,7 @@ the SKILL.md workflow (data streams, searchable snapshots, multi-node, failures)
 - [What a snapshot does NOT carry](#what-a-snapshot-does-not-carry)
 
 ## snapshot
-`snapexe-oss snapshot` (→ `opensearch_snapshot.py snapshot`)
+`snapexe-oss snapshot` (-> `opensearch_snapshot.py snapshot`)
 
 | Flag | Required | Purpose |
 |---|---|---|
@@ -59,7 +59,7 @@ it makes only AWS calls, using the boto3 default credential chain (`--creds-file
 `SUCCESS`, `PARTIAL`, `FAILED`.
 
 ## restore
-`snapexe-oss restore` (→ `restore.py`)
+`snapexe-oss restore` (-> `restore.py`)
 
 | Flag | Required | Purpose |
 |---|---|---|
@@ -112,7 +112,7 @@ Never print the creds file or any Secrets Manager values.
 ## Edge cases & gotchas
 - **Run location:** config/creds are CWD-relative - always run from the repo dir.
 - **New IAM key propagation:** just-minted keys take a few seconds to work; repo registration retries
-  the transient `InvalidAccessKeyId` / "does not exist in our records" error automatically (~4×5s).
+  the transient `InvalidAccessKeyId` / "does not exist in our records" error automatically (~4x5s).
 - **2-key IAM limit:** each `--auto-provision`/restore key-mint counts against IAM's 2-key-per-user
   limit. A full snapshot(source)+restore(dest) cycle uses both; a 3rd mint fails with `LimitExceeded`
   until `delete-all` (or a manual key delete) frees one. Restore reuses existing dest keys when they
