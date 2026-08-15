@@ -31,6 +31,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from opensearch_snapshot import (
     build_repository_body,
     create_iam_user_with_keys,
+    discover_source_containers,
     ensure_repository_s3,
     install_keystore_key,
     load_creds,
@@ -198,8 +199,8 @@ def _restore_repo_body(config):
     )
 
 
-def ingest_dest_keystore(config, session, endpoint, container, boto3_module=None):
-    """Mint a fresh access key for the tag's IAM user, install it into the destination
+def ingest_dest_keystore(config, session, endpoint, containers, boto3_module=None):
+    """Mint a fresh access key for the tag's IAM user, install it into every destination
     node's keystore, and reload secure settings - the restore-side mirror of
     opensearch_snapshot.py's --auto-provision keystore step. Returns True on success.
 
@@ -234,8 +235,9 @@ def ingest_dest_keystore(config, session, endpoint, container, boto3_module=None
             logger.error("Failed to mint destination access key: %s", exc)
         return False
     try:
-        install_keystore_key(container, "s3.client.default.access_key", keys["access_key_id"])
-        install_keystore_key(container, "s3.client.default.secret_key", keys["secret_access_key"])
+        for container in containers:
+            install_keystore_key(container, "s3.client.default.access_key", keys["access_key_id"])
+            install_keystore_key(container, "s3.client.default.secret_key", keys["secret_access_key"])
     except RuntimeError as exc:
         logger.error(str(exc))
         return False
@@ -425,7 +427,13 @@ def run_restore(args, *, session_factory=create_session, boto3_module=None):
         if config.get("repo_type") != "s3":
             logger.error("--install-container only applies to s3 snapshots")
             return 2
-        if not ingest_dest_keystore(config, session, endpoint, install_container, boto3_module):
+        # Repo verification runs on every dest node, so the S3 key must be installed on
+        # all of them - mirror snapshot's --auto-provision multi-node keying. Use the
+        # explicit --dest-containers list when given, else auto-discover the cluster nodes.
+        keystore_containers = _explicit_dest_containers(args) or discover_source_containers(
+            session, endpoint, install_container
+        )
+        if not ingest_dest_keystore(config, session, endpoint, keystore_containers, boto3_module):
             logger.error("Destination keystore ingest failed")
             return 1
 
@@ -503,6 +511,11 @@ def run_restore(args, *, session_factory=create_session, boto3_module=None):
         f"  curl -ku \"{username}:<password>\" \"{endpoint}/_cat/recovery?v\"\n"
     )
     return 0
+
+
+def _explicit_dest_containers(args):
+    raw = getattr(args, "dest_containers", None) or ""
+    return [c.strip() for c in raw.split(",") if c.strip()]
 
 
 def _resolve_dest_containers(args):

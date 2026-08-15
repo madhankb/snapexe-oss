@@ -110,6 +110,37 @@ def discover_data_streams(session, endpoint):
         return []
 
 
+def _backing_snapshot_indices(session, endpoint, backing_repo, backing_snap, retries=4, delay=5):
+    """List the indices inside a backing snapshot, retrying the S3-backed read.
+
+    The read hits the backing bucket and can transiently fail (non-200) right after a
+    keystore key install/reload while the new credentials propagate, so retry before
+    treating the snapshot as empty. Returns the list of index names ([] if it never
+    succeeds).
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            resp = session.get(
+                urljoin(endpoint + "/", f"_snapshot/{backing_repo}/{backing_snap}"),
+                verify=False, timeout=30,
+            )
+            if resp.status_code == 200:
+                snaps = resp.json().get("snapshots", [])
+                return snaps[0].get("indices", []) if snaps else []
+            logger.warning(
+                "Backing snapshot read %s/%s returned %s (attempt %d/%d)",
+                backing_repo, backing_snap, resp.status_code, attempt, retries,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Backing snapshot read %s/%s error (attempt %d/%d): %s",
+                backing_repo, backing_snap, attempt, retries, exc,
+            )
+        if attempt < retries:
+            time.sleep(delay)
+    return []
+
+
 def gather_searchable_remaps(session, endpoint):
     """Return remap info for each searchable-snapshot (remote_snapshot) index on the cluster.
 
@@ -145,18 +176,21 @@ def gather_searchable_remaps(session, endpoint):
             if repo_resp.status_code != 200:
                 continue
             repo_settings = repo_resp.json().get(backing_repo, {}).get("settings", {})
-            # find the source index name inside the snapshot (ISM writes one index per snapshot)
-            snap_resp = session.get(
-                urljoin(endpoint + "/", f"_snapshot/{backing_repo}/{backing_snap}"), verify=False, timeout=30,
-            )
-            snap_indices = []
-            if snap_resp.status_code == 200:
-                snaps = snap_resp.json().get("snapshots", [])
-                if snaps:
-                    snap_indices = snaps[0].get("indices", [])
+            # find the source index name inside the snapshot (ISM writes one index per
+            # snapshot); the S3-backed read is retried so a transient failure right after a
+            # key install/reload doesn't leave source_index null.
+            snap_indices = _backing_snapshot_indices(session, endpoint, backing_repo, backing_snap)
+            source_index = snap_indices[0] if len(snap_indices) == 1 else None
+            if source_index is None:
+                logger.warning(
+                    "Could not resolve source index name for searchable index '%s' from backing "
+                    "snapshot %s/%s (found %d index(es)); recording source_index_id only - restore "
+                    "will skip this remap until source_index is filled in.",
+                    name, backing_repo, backing_snap, len(snap_indices),
+                )
             remaps.append({
                 "name": name,
-                "source_index": snap_indices[0] if len(snap_indices) == 1 else None,
+                "source_index": source_index,
                 "source_index_id": s.get("index.searchable_snapshot.index.id"),
                 "backing_repository": backing_repo,
                 "backing_snapshot": backing_snap,
