@@ -205,6 +205,44 @@ def gather_searchable_remaps(session, endpoint):
         return []
 
 
+def discover_searchable_backing_buckets(session, endpoint):
+    """Return the S3 buckets that back any searchable-snapshot (remote_snapshot) indices.
+
+    The tag IAM user must be able to read those buckets, otherwise gather_searchable_remaps
+    can't read the backing snapshot to resolve each remap's source_index (the read is
+    AccessDenied -> HTTP 500) and restore skips the remap. This is the snapshot-side mirror
+    of restore's backing-bucket grant. Uses only OpenSearch APIs (settings + repo lookups,
+    no S3 read), so it is safe to call before the tag key is installed. Best-effort: returns
+    an empty list on any error.
+    """
+    try:
+        st_resp = session.get(
+            urljoin(endpoint + "/", "_all/_settings?flat_settings=true"), verify=False, timeout=30,
+        )
+        if st_resp.status_code != 200:
+            return []
+        buckets = []
+        for _name, body in st_resp.json().items():
+            s = body.get("settings", {})
+            if s.get("index.store.type") != "remote_snapshot":
+                continue
+            backing_repo = s.get("index.searchable_snapshot.repository")
+            if not backing_repo:
+                continue
+            repo_resp = session.get(
+                urljoin(endpoint + "/", f"_snapshot/{backing_repo}"), verify=False, timeout=30,
+            )
+            if repo_resp.status_code != 200:
+                continue
+            bucket = repo_resp.json().get(backing_repo, {}).get("settings", {}).get("bucket")
+            if bucket and bucket not in buckets:
+                buckets.append(bucket)
+        return buckets
+    except Exception as exc:
+        logger.warning("Could not discover searchable backing buckets: %s", exc)
+        return []
+
+
 def _percent(done, total, state):
     if total > 0:
         return round(100 * done / total)
@@ -775,15 +813,23 @@ def _setup_repository(args, session, endpoint):
     return ok, repository
 
 
-def provision_backend(tag, endpoint, region_arg, bucket_arg, boto3_module):
-    """Create (or reuse) the S3 bucket + scoped IAM user. Returns (config, keys)."""
+def provision_backend(tag, endpoint, region_arg, bucket_arg, boto3_module, extra_buckets=None):
+    """Create (or reuse) the S3 bucket + scoped IAM user. Returns (config, keys).
+
+    extra_buckets grants the tag user read access to additional buckets (the searchable-
+    snapshot backing buckets) so the source_index probe can read them; config["bucket"]
+    stays the single tag bucket.
+    """
     region = resolve_region(region_arg, boto3_module)
     suffix = _random_suffix()
     bucket = bucket_arg or generate_bucket_name(tag, suffix)
     repository = generate_repository_name(tag, suffix)
 
     create_or_get_bucket(boto3_module.client("s3", region_name=region), bucket, region)
-    keys = create_iam_user_with_keys(boto3_module.client("iam"), f"snapexe-{tag}-user", bucket)
+    policy_buckets = [bucket] + [b for b in (extra_buckets or []) if b and b != bucket]
+    keys = create_iam_user_with_keys(
+        boto3_module.client("iam"), f"snapexe-{tag}-user", policy_buckets
+    )
 
     config = {
         "tag": tag,
@@ -891,8 +937,13 @@ def _auto_provision(args, session, endpoint, boto3_module=None):
     containers = _explicit_source_containers(args) or discover_source_containers(
         session, endpoint, install_container
     )
+    # Grant the tag user read access to any searchable-snapshot backing buckets up front,
+    # so gather_searchable_remaps can resolve each remap's source_index after the key is
+    # installed (an un-granted backing bucket is what leaves source_index null on restore).
+    backing_buckets = discover_searchable_backing_buckets(session, endpoint)
     config, keys = provision_backend(
-        args.tag, endpoint, getattr(args, "region", None), getattr(args, "bucket", None), boto3_module
+        args.tag, endpoint, getattr(args, "region", None), getattr(args, "bucket", None),
+        boto3_module, extra_buckets=backing_buckets,
     )
     save_config(args.tag, config)
     logger.info("Installing keystore keys into node(s): %s", ", ".join(containers))

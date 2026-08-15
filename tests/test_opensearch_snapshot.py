@@ -720,6 +720,7 @@ def test_auto_provision_happy_path(tmp_path, monkeypatch):
     session.post.return_value = _json_response({}, status=200)  # reload_secure_settings
     session.get.side_effect = [
         _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
+        _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),  # backing-bucket discovery: none
         _json_response([{"index": "logs"}]),
         _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
         _json_response({"data_streams": []}),
@@ -774,6 +775,7 @@ def test_auto_provision_installs_keys_on_all_source_containers(tmp_path, monkeyp
     session.post.return_value = _json_response({}, status=200)  # reload_secure_settings
     session.get.side_effect = [
         _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
+        _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),  # backing-bucket discovery: none
         _json_response([{"index": "logs"}]),
         _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
         _json_response({"data_streams": []}),
@@ -853,6 +855,7 @@ def test_auto_provision_auto_discovers_all_nodes(tmp_path, monkeypatch):
     session.post.return_value = _json_response({}, status=200)  # reload_secure_settings
     session.get.side_effect = [
         _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
+        _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),  # backing-bucket discovery: none
         _json_response([{"index": "logs"}]),
         _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
         _json_response({"data_streams": []}),
@@ -1015,3 +1018,88 @@ def test_gather_searchable_remaps_empty_when_none():
         {"logs": {"settings": {"index.store.type": "fs"}}}
     )
     assert oss.gather_searchable_remaps(session, "https://h:9200") == []
+
+
+def test_discover_searchable_backing_buckets_returns_foreign_bucket():
+    # A remote_snapshot index backed by a different bucket than the tag bucket must be
+    # surfaced so the tag IAM user can be granted read access to it.
+    session = MagicMock()
+    settings_body = {
+        "logs-searchable": {"settings": {
+            "index.store.type": "remote_snapshot",
+            "index.searchable_snapshot.repository": "snapexe-ss-repo-vsqw",
+        }},
+        "logs": {"settings": {"index.store.type": "fs"}},  # regular index - ignored
+    }
+    repo_body = {"snapexe-ss-repo-vsqw": {"settings": {"bucket": "snapexe-ss-vsqw"}}}
+    session.get.side_effect = [
+        _json_response(settings_body),  # _all/_settings
+        _json_response(repo_body),      # _snapshot/{repo}
+    ]
+    assert oss.discover_searchable_backing_buckets(session, "https://h:9200") == [
+        "snapexe-ss-vsqw"
+    ]
+
+
+def test_discover_searchable_backing_buckets_empty_when_no_searchable():
+    session = MagicMock()
+    session.get.return_value = _json_response(
+        {"logs": {"settings": {"index.store.type": "fs"}}}
+    )
+    assert oss.discover_searchable_backing_buckets(session, "https://h:9200") == []
+
+
+def test_auto_provision_grants_searchable_backing_bucket_to_iam_policy(tmp_path, monkeypatch):
+    # Regression: a searchable-snapshot index whose backing bucket differs from the tag
+    # bucket must be added to the tag user's IAM policy. Otherwise the backing-snapshot
+    # read is AccessDenied, source_index can't be resolved, and restore skips the remap.
+    monkeypatch.chdir(tmp_path)
+    _write_source_creds(tmp_path)
+
+    monkeypatch.setattr(oss, "install_keystore_key", lambda *a, **k: None)
+    monkeypatch.setattr(oss, "get_cluster_node_names", lambda s, e: ["os-source"], raising=False)
+    monkeypatch.setattr(oss, "running_docker_container_names", lambda: {"os-source"}, raising=False)
+
+    iam = MagicMock()
+    iam.create_access_key.return_value = {
+        "AccessKey": {"AccessKeyId": "AKIA1", "SecretAccessKey": "sek1"}
+    }
+    boto3_module = MagicMock()
+    boto3_module.session.Session.return_value.region_name = "us-east-1"
+    boto3_module.client.return_value = iam
+
+    settings_body = {
+        "logs-searchable": {"settings": {
+            "index.store.type": "remote_snapshot",
+            "index.searchable_snapshot.repository": "snapexe-ss-repo-vsqw",
+        }},
+    }
+    repo_body = {"snapexe-ss-repo-vsqw": {"settings": {"bucket": "snapexe-ss-vsqw"}}}
+
+    session = MagicMock()
+    session.post.return_value = _json_response({}, status=200)  # reload_secure_settings
+    session.get.side_effect = [
+        _json_response([{"component": "repository-s3"}]),  # ensure_repository_s3 check
+        _json_response(settings_body),                     # backing-bucket discovery: _all/_settings
+        _json_response(repo_body),                         # backing-bucket discovery: _snapshot/{repo}
+        _json_response([{"index": "logs"}]),               # discover_hot_indices
+        _json_response({"logs": {"settings": {"index.store.type": "fs"}}}),
+        _json_response({"data_streams": []}),              # discover_data_streams
+        _json_response({"snapshots": []}),                 # check_repository_snapshot_status
+    ]
+    session.put.side_effect = [
+        _json_response({"acknowledged": True}),          # register repo
+        _json_response({"task": "task-1"}, status=202),  # snapshot
+    ]
+
+    rc = oss.run_snapshot(_auto_provision_args(),
+                          session_factory=lambda u, p: session,
+                          boto3_module=boto3_module)
+    assert rc == 0
+    policy = json.loads(iam.put_user_policy.call_args.kwargs["PolicyDocument"])
+    resources = []
+    for stmt in policy["Statement"]:
+        res = stmt["Resource"]
+        resources.extend(res if isinstance(res, list) else [res])
+    assert "arn:aws:s3:::snapexe-ss-vsqw" in resources
+    assert "arn:aws:s3:::snapexe-ss-vsqw/*" in resources

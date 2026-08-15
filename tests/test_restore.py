@@ -400,6 +400,8 @@ def test_run_restore_install_container_ingests_keystore(tmp_path, monkeypatch):
     installed = []
     monkeypatch.setattr(restore, "install_keystore_key",
                         lambda c, n, v: installed.append((c, n)))
+    # Node discovery hits _cat/nodes + docker; stub it to the anchor for a deterministic test.
+    monkeypatch.setattr(restore, "discover_source_containers", lambda s, e, c: [c])
 
     boto3_module = MagicMock()
     boto3_module.client.return_value.create_access_key.return_value = {
@@ -503,6 +505,7 @@ def test_run_restore_datastream_uses_admin_cert(tmp_path, monkeypatch):
     _write_s3_config()
     monkeypatch.setattr(restore, "ensure_repository_s3", lambda s, e, c: True)
     monkeypatch.setattr(restore, "ingest_dest_keystore", lambda *a, **k: True)
+    monkeypatch.setattr(restore, "discover_source_containers", lambda s, e, c: [c])
     basic, cert = [], []
     monkeypatch.setattr(restore, "restore_snapshot", lambda *a, **k: basic.append(1) or True)
     monkeypatch.setattr(restore, "restore_via_admin_cert",
