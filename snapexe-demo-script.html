@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>snapexe-oss - 5-Minute Demo Video Script &amp; Storyboard</title>
+<style>
+  :root{
+    --bg:#0f1720; --panel:#151f2b; --panel-2:#1b2735; --ink:#e6edf3; --muted:#9fb0c0;
+    --line:#26374a; --accent:#38bdf8; --accent-2:#a78bfa; --term:#34d399; --warn:#fbbf24;
+    --code-bg:#0b1119; --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:linear-gradient(180deg,#0c141d,#0f1720 320px); color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  code,pre,kbd{font-family:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .wrap{max-width:980px;margin:0 auto;padding:0 20px 96px}
+
+  header.hero{padding:56px 0 28px;border-bottom:1px solid var(--line);margin-bottom:24px}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:12px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--accent);font-weight:700}
+  .eyebrow::before{content:"";width:22px;height:2px;background:var(--accent);border-radius:2px}
+  h1{font-size:33px;line-height:1.15;margin:14px 0 10px;letter-spacing:-.02em}
+  h1 span{color:var(--accent)}
+  .lede{color:var(--muted);max-width:74ch;margin:0 0 16px}
+  .meta{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px}
+  .meta .pill{font-size:13px;color:#cdd8e3;background:var(--panel);border:1px solid var(--line);
+    padding:6px 12px;border-radius:999px}
+  .meta .pill b{color:#e6edf3}
+
+  .toolbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;
+    gap:12px;padding:10px 14px;margin:0 0 22px;background:rgba(15,23,32,.86);backdrop-filter:blur(8px);
+    border:1px solid var(--line);border-radius:12px}
+  .toolbar .left{color:var(--muted);font-size:13.5px}
+  .toolbar .left b{color:var(--term)}
+  .btn{cursor:pointer;border:1px solid var(--line);background:#0e1620;color:var(--ink);
+    font-size:13px;font-weight:600;padding:7px 14px;border-radius:9px;transition:.15s}
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .btn.on{background:var(--accent-2);border-color:var(--accent-2);color:#140a2b}
+
+  table.map{width:100%;border-collapse:collapse;margin:8px 0 26px;font-size:14px}
+  table.map th,table.map td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  table.map th{color:var(--muted);font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-weight:700}
+  table.map td.t{color:var(--accent);white-space:nowrap;font-family:"SF Mono",ui-monospace,monospace;font-size:13px}
+  table.map tr:hover td{background:rgba(56,189,248,.05)}
+
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;margin:22px 0}
+  .box h3{margin:0 0 10px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .box ul{margin:0;padding-left:18px}
+  .box li{margin:7px 0;color:#cdd8e3;font-size:14.5px}
+  .box code{background:var(--panel-2);padding:2px 6px;border-radius:6px;font-size:13px;color:#e6edf3}
+
+  .scene{position:relative;margin:26px 0;padding:22px 24px 10px;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--radius)}
+  .scene-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:8px}
+  .num{flex:0 0 auto;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;
+    font-weight:800;color:#04121a;background:linear-gradient(145deg,var(--accent),#22a6dd);
+    box-shadow:0 4px 14px rgba(56,189,248,.28)}
+  .scene h2{font-size:19px;margin:2px 0 3px;letter-spacing:-.01em}
+  .scene h2 .time{color:var(--accent);font-family:"SF Mono",ui-monospace,monospace;font-size:14px;margin-left:8px}
+  .purpose{color:var(--muted);font-size:14px;margin:0}
+
+  .label{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:700;
+    letter-spacing:.07em;text-transform:uppercase;margin:14px 0 6px}
+  .label.screen{color:var(--accent)}
+  .label.vo-l{color:var(--accent-2)}
+  .label .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+
+  .onscreen{color:#cdd8e3;font-size:14.5px;margin:2px 0 4px}
+  .onscreen .lower{color:var(--warn);font-style:italic}
+
+  .block{margin:10px 0 14px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--code-bg)}
+  .block-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:7px 12px;background:var(--panel-2);border-bottom:1px solid var(--line)}
+  .badge{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:700;
+    letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:999px}
+  .badge.term{color:var(--term);background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.3)}
+  .badge.prompt{color:var(--accent-2);background:rgba(167,139,250,.12);border:1px solid rgba(167,139,250,.3)}
+  .badge .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+  .copy{cursor:pointer;border:1px solid var(--line);background:#0e1620;color:var(--ink);
+    font-size:12px;font-weight:600;padding:4px 11px;border-radius:8px;transition:.15s}
+  .copy:hover{border-color:var(--accent);color:var(--accent)}
+  .copy.copied{background:var(--term);border-color:var(--term);color:#052015}
+  pre{margin:0;padding:13px 15px;overflow-x:auto;font-size:13px;line-height:1.55;color:#dbe7f1;white-space:pre-wrap}
+
+  .vo{position:relative;border-left:3px solid var(--accent-2);background:rgba(167,139,250,.08);
+    padding:14px 18px;border-radius:0 10px 10px 0;margin:6px 0 14px}
+  .vo .est{position:absolute;top:10px;right:12px;font-size:11px;font-weight:700;color:var(--accent-2);
+    background:rgba(167,139,250,.12);border:1px solid rgba(167,139,250,.3);padding:2px 8px;border-radius:999px}
+  .vo p{margin:0;font-size:17px;line-height:1.6;color:#eef2f7}
+  .vo .cue{color:var(--warn);font-style:italic;font-weight:600}
+
+  footer{margin-top:40px;padding-top:22px;border-top:1px solid var(--line);color:var(--muted);font-size:13.5px}
+  footer a{color:var(--accent)}
+
+  /* Teleprompter mode: show only the narration, big. */
+  body.tele .toolbar{position:fixed;left:20px;right:20px;top:14px;max-width:940px;margin:0 auto}
+  body.tele header.hero,body.tele table.map,body.tele .box,body.tele .scene .scene-head .num,
+  body.tele .label.screen,body.tele .onscreen,body.tele .block,body.tele .purpose,body.tele footer{display:none}
+  body.tele .wrap{padding-top:70px}
+  body.tele .scene{background:transparent;border:none;padding:8px 0}
+  body.tele .scene h2{font-size:22px}
+  body.tele .vo{background:transparent;border-left-width:4px}
+  body.tele .vo p{font-size:30px;line-height:1.5}
+  body.tele .vo .est{font-size:13px}
+  body.tele .label.vo-l{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">snapexe-oss skill &middot; demo video</div>
+    <h1>5-Minute Demo Video <span>Script &amp; Storyboard</span></h1>
+    <p class="lede">A shot-by-shot plan with word-for-word narration, timed to land at 5:00. Built for a
+      Tech Lead / CTO: lead with business value, let the terminal prove the depth. Format is a live
+      agent-driven screen recording (Claude Code driving the skill against the real source / dest clusters)
+      with voiceover.</p>
+    <div class="meta">
+      <span class="pill"><b>Audience:</b> Tech Lead / CTO</span>
+      <span class="pill"><b>Runtime:</b> 5:00</span>
+      <span class="pill"><b>Narration:</b> ~730 words @ ~150 wpm</span>
+      <span class="pill"><b>Format:</b> live screen recording + VO</span>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <div class="left">Tip: hit <b>Teleprompter mode</b> to show only the lines to read, enlarged for recording.</div>
+    <button class="btn" id="teleBtn" onclick="toggleTele()">Teleprompter mode</button>
+  </div>
+
+  <table class="map">
+    <thead><tr><th>#</th><th>Time</th><th>Beat</th><th>Purpose (judging lens)</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td class="t">0:00-0:30</td><td>The problem</td><td>Hook - customer pain</td></tr>
+      <tr><td>2</td><td class="t">0:30-1:00</td><td>What it is</td><td>Innovation + portability</td></tr>
+      <tr><td>3</td><td class="t">1:00-1:25</td><td>The source (what's at stake)</td><td>Sets up the payoff</td></tr>
+      <tr><td>4</td><td class="t">1:25-1:40</td><td>Dest is empty</td><td>Establishes the "before"</td></tr>
+      <tr><td>5</td><td class="t">1:40-2:35</td><td>Back up (one prompt)</td><td>Productivity - the wow</td></tr>
+      <tr><td>6</td><td class="t">2:35-2:50</td><td>Status: SUCCESS</td><td>Operational honesty</td></tr>
+      <tr><td>7</td><td class="t">2:50-3:45</td><td>Restore / migrate</td><td>Technical innovation - the hard part</td></tr>
+      <tr><td>8</td><td class="t">3:45-4:15</td><td>Prove it's queryable</td><td>Utility - real proof</td></tr>
+      <tr><td>9</td><td class="t">4:15-4:40</td><td>Teardown (dry-run + confirm)</td><td>Operational excellence - safety</td></tr>
+      <tr><td>10</td><td class="t">4:40-5:00</td><td>Why it wins</td><td>Close + call to action</td></tr>
+    </tbody>
+  </table>
+
+  <!-- SCENE 1 -->
+  <section class="scene">
+    <div class="scene-head"><div class="num">1</div>
+      <div><h2>The problem<span class="time">0:00-0:30</span></h2>
+      <p class="purpose">Hook - the customer pain.</p></div></div>
+    <div class="label screen"><span class="dot"></span>On screen</div>
+    <p class="onscreen">Title card ("snapexe-oss - OpenSearch backup, migration &amp; teardown as an agent skill"),
+      then hard-cut to the terminal at the source cluster. Lower-third: <span class="lower">"Data streams + searchable snapshots = the hard part."</span></p>
+    <div class="label vo-l"><span class="dot"></span>Narration</div>
+    <div class="vo"><span class="est">~30s</span><p>"Backing up and migrating a self-managed OpenSearch cluster sounds simple - until you hit data streams and searchable snapshots. Then it's a multi-hour runbook: provision S3, mint IAM users, push keystore keys to every node, juggle superadmin certificates, and remap searchable indices by hand. One wrong step and you've either lost data or left billable resources running. snapexe-oss turns that entire runbook into a single sentence."</p></div>
+  </section>
+
+  <!-- SCENE 2 -->
+  <section class="scene">
+    <div class="scene-head"><div class="num">2</div>
+      <div><h2>What it is<span class="time">0:30-1:00</span></h2>
+      <p class="purpose">Innovation + portability.</p></div></div>
+    <div class="label screen"><span class="dot"></span>On screen</div>
+    <p class="onscreen">Quick scroll of <code>SKILL.md</code> (description + the 4 workflows), then a one-line mental model:
+      <code>plain English -&gt; snapexe-oss skill -&gt; OpenSearch public APIs + boto3</code>. Lower-third: <span class="lower">"No proprietary services. No lock-in."</span></p>
+    <div class="label vo-l"><span class="dot"></span>Narration</div>
+    <div class="vo"><span class="est">~29s</span><p>"snapexe-oss is an agent skill. You ask, in plain English, to back up, migrate, or tear down a cluster, and the agent drives the whole lifecycle: snapshot, status, restore, and cleanup. The engine underneath is just Python over OpenSearch's public snapshot APIs and the standard AWS credential chain - no proprietary services, no lock-in. Let me show you a full backup-and-migrate, live, against two real clusters."</p></div>
+  </section>
+
+  <!-- SCENE 3 -->
+  <section class="scene">
+    <div class="scene-head"><div class="num">3</div>
+      <div><h2>The source<span class="time">1:00-1:25</span></h2>
+      <p class="purpose">What's at stake - sets up the payoff.</p></div></div>
+    <div class="label screen"><span class="dot"></span>On screen</div>
+    <p class="onscreen">Run against the source and let it land; highlight <code>logs</code> / <code>orders</code> / <code>users</code>,
+      the <code>logs-datastream</code> data stream, and <code>logs-searchable</code> (<code>remote_snapshot</code>).</p>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$SCRED" "https://localhost:9200/_cat/indices?v&amp;s=index"
+curl -sku "$SCRED" "https://localhost:9200/_data_stream?pretty"</pre>
+    </div>
+    <div class="label vo-l"><span class="dot"></span>Narration</div>
+    <div class="vo"><span class="est">~22s</span><p>"Here's our source cluster - two nodes, hot and warm. It has regular indices - logs, orders, users - a data stream, logs-datastream, and the hard one: logs-searchable, a searchable snapshot whose data already lives in S3. Three different beasts, each restored a different way. That's exactly what trips people up."</p></div>
+  </section>
+
+  <!-- SCENE 4 -->
+  <section class="scene">
+    <div class="scene-head"><div class="num">4</div>
+      <div><h2>Destination is empty<span class="time">1:25-1:40</span></h2>
+      <p class="purpose">Establishes the "before".</p></div></div>
+    <div class="label screen"><span class="dot"></span>On screen</div>
+    <p class="onscreen">Dest indices - only system indices. Lower-third: <span class="lower">"Destination: empty."</span></p>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$DCRED" "https://localhost:9201/_cat/indices?v&amp;s=index"</pre>
+    </div>
+    <div class="label vo-l"><span class="dot"></span>Narration</div>
+    <div class="vo"><span class="est">~13s</span><p>"And here's the destination - a fresh, empty cluster. Only system indices. Nothing of ours. By the end of this video, everything from the source will be here, and provably queryable."</p></div>
+  </section>
+
+  <!-- SCENE 5 -->
+  <section class="scene">
+    <div class="scene-head"><div class="num">5</div>
+      <div><h2>Back up the source<span class="time">1:40-2:35</span></h2>
+      <p class="purpose">Productivity - the wow moment.</p></div></div>
+    <div class="label screen"><span class="dot"></span>On screen</div>
+    <p class="onscreen">Paste the backup prompt into Claude Code. Fast-forward the provisioning; land on the clean
+      <b>"Snapshot started"</b> summary (S3 bucket / IAM user / repository).</p>
+    <div class="block">
+      <div class="block-bar"><span class="badge prompt"><span class="dot"></span>Prompt Claude Code</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>Using the snapexe-oss skill: back up my source OpenSearch cluster at
+https://localhost:9200 to S3 with tag "demo", using the Secrets Manager
+secret snapexe/opensearch for credentials. It is a 2-node cluster (Docker
+containers os-source-hot and os-source-warm) with no repository set up yet -
+provision the bucket + IAM user and install the keystore keys on both nodes,
+in us-west-2.</pre>
+    </div>
+    <div class="label vo-l"><span class="dot"></span>Narration</div>
+    <div class="vo"><span class="est">~50s</span><p>"Now the backup. One prompt: back up the source to S3, tag it 'demo', pull credentials from Secrets Manager, and set it up from scratch." <span class="cue">(let it run / cut forward)</span> "Watch what the skill just did on its own. It provisioned an S3 bucket and an IAM user, installed the repository-s3 keystore keys on both nodes - not just one, because the repository is verified cluster-wide - reloaded secure settings, and started the snapshot. That's roughly a dozen manual steps, and it never printed a secret. And notice it says 'started', not 'done' - because snapshots are asynchronous, and honest tools don't claim completion they can't see."</p></div>
+  </section>
+
+  <!-- SCENE 6 -->
+  <section class="scene">
+    <div class="scene-head"><div class="num">6</div>
+      <div><h2>Status<span class="time">2:35-2:50</span></h2>
+      <p class="purpose">Operational honesty.</p></div></div>
+    <div class="label screen"><span class="dot"></span>On screen</div>
+    <p class="onscreen">Prompt for status; show the per-index heatmap, fast-forward to <b>SUCCESS 100%</b>.</p>
+    <div class="block">
+      <div class="block-bar"><span class="badge prompt"><span class="dot"></span>Prompt Claude Code</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>Show me the status of the "demo" snapshot.</pre>
+    </div>
+    <div class="label vo-l"><span class="dot"></span>Narration</div>
+    <div class="vo"><span class="est">~14s</span><p>"I ask for status. The skill queries the live snapshot API and renders a per-index heatmap. Fast-forwarding to completion - every shard, SUCCESS, one hundred percent. The backup is safely in S3."</p></div>
+  </section>
+
+  <!-- SCENE 7 -->
+  <section class="scene">
+    <div class="scene-head"><div class="num">7</div>
+      <div><h2>Restore / migrate<span class="time">2:50-3:45</span></h2>
+      <p class="purpose">Technical innovation - the hard part.</p></div></div>
+    <div class="label screen"><span class="dot"></span>On screen</div>
+    <p class="onscreen">Paste the restore prompt. Fast-forward; land on <b>"Restore started"</b>. Optionally flash the restore-progress heatmap.</p>
+    <div class="block">
+      <div class="block-bar"><span class="badge prompt"><span class="dot"></span>Prompt Claude Code</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>Using the snapexe-oss skill: restore the "demo" snapshot into the destination
+cluster at https://localhost:9201, including the data stream and the searchable
+snapshot. It is a 2-node cluster (os-dest-hot, os-dest-warm); use the secret
+snapexe/opensearch.</pre>
+    </div>
+    <div class="label vo-l"><span class="dot"></span>Narration</div>
+    <div class="vo"><span class="est">~44s</span><p>"Now the real test - migrating into that empty cluster. One prompt: restore the 'demo' snapshot into the destination, including the data stream and the searchable snapshot. Here's where the hard parts happen automatically. Regular indices restore over the API. The data stream restores through the destination node's superadmin certificate - and because the snapshot carried global state, its index template travels with it and is recreated for us, with nothing to pre-build. And the searchable snapshot isn't re-copied - the skill re-points the destination at the same S3 backing snapshot. Three restore paths, one sentence."</p></div>
+  </section>
+
+  <!-- SCENE 8 -->
+  <section class="scene">
+    <div class="scene-head"><div class="num">8</div>
+      <div><h2>Prove it's queryable<span class="time">3:45-4:15</span></h2>
+      <p class="purpose">Utility - real proof.</p></div></div>
+    <div class="label screen"><span class="dot"></span>On screen</div>
+    <p class="onscreen">Three searches on the dest, each showing <code>hits.total.value &gt; 0</code>. Let each land for a beat.</p>
+    <div class="block">
+      <div class="block-bar"><span class="badge term"><span class="dot"></span>Terminal &middot; the proof</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>curl -sku "$DCRED" "https://localhost:9201/logs/_search?pretty&amp;size=1&amp;track_total_hits=true"
+curl -sku "$DCRED" "https://localhost:9201/logs-datastream/_search?pretty&amp;size=1&amp;track_total_hits=true"
+curl -sku "$DCRED" "https://localhost:9201/logs-searchable/_search?pretty&amp;size=1&amp;track_total_hits=true"</pre>
+    </div>
+    <div class="label vo-l"><span class="dot"></span>Narration</div>
+    <div class="vo"><span class="est">~27s</span><p>"Presence isn't proof, so let's actually query the destination. The regular index - hits. The data stream, across its backing indices - hits. And the searchable snapshot, served straight from S3 on the destination - hits. The full cluster, three index types, migrated and queryable end to end, on a cluster that was empty ninety seconds ago."</p></div>
+  </section>
+
+  <!-- SCENE 9 -->
+  <section class="scene">
+    <div class="scene-head"><div class="num">9</div>
+      <div><h2>Teardown<span class="time">4:15-4:40</span></h2>
+      <p class="purpose">Operational excellence - safety.</p></div></div>
+    <div class="label screen"><span class="dot"></span>On screen</div>
+    <p class="onscreen">Paste the teardown prompt: dry-run preview -&gt; your "yes" -&gt; <b>"Deleted"</b> summary. Flash one verify
+      (<code>aws iam get-user --user-name snapexe-demo-user</code> -&gt; <code>NoSuchEntity</code>).
+      Lower-third: <span class="lower">"Dry-run + confirm before anything destructive."</span></p>
+    <div class="block">
+      <div class="block-bar"><span class="badge prompt"><span class="dot"></span>Prompt Claude Code</span><button class="copy" onclick="copyBlock(this)">Copy</button></div>
+<pre>Using the snapexe-oss skill: delete all the AWS and repository resources for
+tag "demo". Do a dry-run first, show me the preview, then delete.</pre>
+    </div>
+    <div class="label vo-l"><span class="dot"></span>Narration</div>
+    <div class="vo"><span class="est">~25s</span><p>"Finally, cleanup - the step everyone forgets, and the one that quietly runs up your AWS bill. I ask it to tear down everything tagged 'demo'. It runs a dry-run first, shows exactly what will be deleted, and waits for my confirmation before touching anything. Confirmed - bucket, IAM user, keys, repository, config file: all gone. No orphaned resources."</p></div>
+  </section>
+
+  <!-- SCENE 10 -->
+  <section class="scene">
+    <div class="scene-head"><div class="num">10</div>
+      <div><h2>Why it wins<span class="time">4:40-5:00</span></h2>
+      <p class="purpose">Close + call to action.</p></div></div>
+    <div class="label screen"><span class="dot"></span>On screen</div>
+    <p class="onscreen">Closing card - value bullets + <code>github.com/madhankb/snapexe-oss</code> + "Hackathon submission #118".</p>
+    <div class="label vo-l"><span class="dot"></span>Narration</div>
+    <div class="vo"><span class="est">~19s</span><p>"That's snapexe-oss. A day-long, expert-only runbook - backup, migration, and cleanup across data streams and searchable snapshots - reduced to plain-language requests, with safety built in and zero vendor lock-in. Production-ready code, tests, and docs are on GitHub today. Thanks for watching."</p></div>
+  </section>
+
+  <div class="box">
+    <h3>Pre-flight checklist (before you hit record)</h3>
+    <ul>
+      <li><b>Dry-run the whole flow once end to end</b> so plugins/keys are warm and you know the timings. Then reset for the take.</li>
+      <li><b>Reset the destination to empty</b> (remove <code>logs</code>/<code>orders</code>/<code>users</code>/<code>logs-searchable</code>/<code>logs-datastream</code> and the dest-side repo registration) - Scene 4 must show only system indices.</li>
+      <li><b>Free an IAM key slot:</b> a full snapshot+restore cycle uses both of the user's 2 allowed keys. Tear down the <code>demo</code> tag's prior resources (<code>delete-all</code>) so provisioning doesn't hit <code>LimitExceeded</code> mid-take.</li>
+      <li><b>Confirm identity:</b> <code>aws sts get-caller-identity</code> shows account <code>765423874566</code>, region <code>us-west-2</code>; secret <code>snapexe/opensearch</code> exists.</li>
+      <li><b>Set the two shell vars</b> (<code>$SCRED</code>, <code>$DCRED</code>) off-camera, in the same shell you'll record - never show the Secrets Manager pull on screen.</li>
+    </ul>
+  </div>
+
+  <div class="box">
+    <h3>Recording &amp; pacing notes</h3>
+    <ul>
+      <li><b>Handle the async waits in the edit, not on camera.</b> Snapshot and restore can take minutes. Record the prompt + the "started" summary live, cut, then cut back to the completed status/queries. Say "fast-forwarding to completion" so it's honest, never faked.</li>
+      <li><b>Terminal:</b> 18-20 pt font, ~1080p window, high-contrast theme, clear the scrollback before each scene. Turn on Do Not Disturb.</li>
+      <li><b>Two windows side by side</b> (Claude Code left, plain terminal for the curl proofs right) reads better than tab-switching.</li>
+      <li><b>Captions for muted viewers:</b> the lower-thirds double as on-screen text - many judges watch without sound first.</li>
+      <li><b>The one moment to nail:</b> Scene 8's three "hits &gt; 0" lines are the proof. Let each land for a full beat before moving on.</li>
+    </ul>
+  </div>
+
+  <footer>
+    <p>Companion to <a href="snapexe-demo.html">snapexe-demo.html</a> (the clickable, copy-buttoned walkthrough).
+    Driven by the <b>snapexe-oss</b> skill &middot; <code>opensearch_snapshot.py</code> &middot; <code>restore.py</code> &middot; <code>delete_all.py</code>.</p>
+  </footer>
+
+</div>
+
+<script>
+  function copyBlock(btn){
+    var block = btn.closest('.block');
+    var text = block.querySelector('pre').textContent;
+    function done(){ var old = btn.textContent; btn.textContent='Copied!'; btn.classList.add('copied');
+      setTimeout(function(){ btn.textContent=old; btn.classList.remove('copied'); }, 1400); }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done).catch(fallback);
+    } else { fallback(); }
+    function fallback(){
+      var ta=document.createElement('textarea'); ta.value=text;
+      ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.focus(); ta.select();
+      try{ document.execCommand('copy'); }catch(e){}
+      document.body.removeChild(ta); done();
+    }
+  }
+  function toggleTele(){
+    document.body.classList.toggle('tele');
+    document.getElementById('teleBtn').classList.toggle('on');
+  }
+</script>
+</body>
+</html>
