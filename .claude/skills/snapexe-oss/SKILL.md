@@ -27,12 +27,24 @@ right command, run it, enforce the safety rules, and report a short, honest summ
 
 ## Environment & prerequisites
 
-- **Run from the snapexe-oss repo directory** - the folder containing `opensearch_snapshot.py`,
-  `restore.py`, `delete_all.py`. Config and credential files are read/written relative to the current
-  directory, so always `cd` there first.
-- **Invoke the tool** with the `snapexe-oss` command if it's on PATH; otherwise run the scripts with
-  the repo's virtualenv Python: `.venv/bin/python opensearch_snapshot.py ...`,
-  `.venv/bin/python restore.py ...`, `.venv/bin/python delete_all.py ...`. Both forms are equivalent.
+- **Always run from the repo directory `/Users/mkbn/Public/hackathon`** - the folder with
+  `opensearch_snapshot.py`, `restore.py`, `delete_all.py`, and `snapexe-creds.json`. Config and
+  credentials are read relative to the current directory, so `cd /Users/mkbn/Public/hackathon` first,
+  once. **Never `cd` into the skill directory (`.claude/skills/snapexe-oss`)** - it holds only these
+  docs, so running the tool from there fails with a creds-not-found error and triggers a noisy hunt for
+  the repo (a failed command + `find`/`ls`/`command -v`). That failed-first-attempt is the #1 source of
+  output noise - avoid it.
+- **Invoke the tool** with the repo's virtualenv Python (or the `snapexe-oss` wrapper if preferred;
+  equivalent). The CLI shapes are fixed - **never `grep`, search, or read the scripts to "confirm the
+  CLI form"; use these commands verbatim** (fill in `<tag>`/`<url>`, always redirect per Output
+  discipline):
+    - Back up:          `.venv/bin/python opensearch_snapshot.py snapshot --tag <tag> --endpoint <src-url> --repo-type s3 --auto-provision --install-container os-source-hot`
+    - Snapshot status:  `.venv/bin/python opensearch_snapshot.py status --tag <tag>`
+    - Restore:          `.venv/bin/python restore.py --tag <tag> --endpoint <dest-url> --install-container os-dest-hot --dest-containers os-dest-hot,os-dest-warm`
+    - Restore progress: `.venv/bin/python restore.py --progress --tag <tag> --endpoint <dest-url>`
+    - Delete-all:       `.venv/bin/python delete_all.py --tag <tag> --dry-run`  then, after an explicit yes, `.venv/bin/python delete_all.py --tag <tag> --yes`
+  (`opensearch_snapshot.py` uses subcommands; `restore.py` and `delete_all.py` take flat flags. No need
+  to verify any of this - it will not change.)
 - **OpenSearch credentials** come from either a JSON file (default `snapexe-creds.json`, working dir;
   override with `--creds-file`) or **AWS Secrets Manager** via `--secret-id <name>` (which takes
   precedence when set). Both use the same shape: an `opensearch_source` block (snapshot/status read this)
@@ -75,11 +87,21 @@ The user must see **only clean, natural-language output** - never the tool's INF
 output, or pre-flight commands. **Do not use emojis or decorative glyphs anywhere in this skill.**
 
 - **Suppress the tool's logs.** Run the CLI with output redirected to a temp file, e.g.
-  `snapexe-oss snapshot ... > /tmp/snapexe-<tag>.out 2>&1`, then read that file yourself and present only
-  the summary below. Raw INFO/log lines must not appear in the chat.
-- **No visible pre-flight.** Don't run separate orienting commands (`ls`, `docker ps`,
-  `curl _cat/nodes`, creds/config peeks) as their own steps, and don't narrate ("I'll run a few
-  checks..."). Run the single command you need and let the tool orient itself.
+  `snapexe-oss snapshot ... > /tmp/snapexe-<tag>.out 2>&1`, then read that file with the Read tool and
+  present only the summary below. Raw INFO/log lines must not appear in the chat. Do NOT run a second
+  visible command (`grep`, `cat`, `tail`, `sed`, inline `python -c`) to dump or filter the temp file -
+  read it silently and summarize.
+- **No visible pre-flight - one command per step.** Never run separate orienting commands: no
+  `command -v`, `ls`, `find`, `docker ps`, `curl _cat/nodes`, `python -c` creds/config peeks, and
+  **no `grep`/search/read of the scripts to "confirm the CLI form"** (the exact commands are in
+  Environment - use them verbatim). The tool self-orients: `--auto-provision` auto-discovers every
+  cluster node, so you never need `docker ps` to find containers. Pass the anchor directly - the local
+  containers are `os-source-hot`/`os-source-warm` (source) and `os-dest-hot`/`os-dest-warm` (dest); use
+  `--install-container os-source-hot` for backup and `os-dest-hot` for restore without probing.
+- **No narration - the clean summary is the entire response.** Don't write process chatter: no
+  "Let me...", "I'll invoke/confirm...", "Confirmed - ...", "The command succeeded, let me read the
+  output...", and no trailing "Want me to check progress?" offers. For each request: run the single
+  command silently, then output only the summary/heatmap template - nothing before or after it.
 - **Hide all plumbing.** Never mention docker containers, node names (os-source-hot/warm), keystore
   keys, plugin installs, reloads, retries, or shard-level internals. Report only what the user cares
   about: what was captured, where it lives, how to check progress. (Never write a line like "keyed both
@@ -228,16 +250,19 @@ snapexe-oss restore --tag <tag> --endpoint <dest-url> \
 - Restore is asynchronous (fire-and-forget) - like a snapshot, report it as *started*, don't wait for
   recovery to finish.
 
-**Restore progress uses the same heatmap.** Whenever the user asks how a restore is going, query the
-dest's recovery API live and render the **same `▓`/`░` heatmap** as status - one row per index, bar from
-the recovery percent (`fill = round(bytes_percent / 100 * 20)`), plain-text state (done / recovering /
-pending - no glyphs):
+**Restore progress uses the same heatmap.** Whenever the user asks how a restore is going, run the
+`restore-progress` command redirected to a temp file, read it silently with the Read tool, and render
+the **same `▓`/`░` heatmap** as status - one row per index, bar from the recovery percent
+(`fill = round(percent / 100 * 20)`), plain-text state (done / recovering / pending - no glyphs):
 
 ```bash
-curl -sku "<dest-creds>" "<dest-url>/_cat/recovery?v&active_only=false&format=json&h=index,stage,bytes_percent"
+snapexe-oss restore --progress --tag <tag> --endpoint <dest-url> > /tmp/snapexe-<tag>-recovery.out 2>&1
 ```
-Aggregate shards to one bar per index (use the min bytes_percent across an index's shards; `stage=done`
-means 100%). Lead with an overall line, e.g.:
+The `--progress` mode already queries the dest's recovery API, filters out system indices
+(`.opendistro_security`, `.plugins-ml-config`, `.opensearch-*`), rolls `.ds-*` backing indices up under
+their data-stream name (e.g. `logs-datastream`), and prints an overall line plus one
+`  - <index>: <percent>% <state>` row per index - just render those rows as the heatmap.
+Lead with an overall line, e.g.:
 
 ```
 Restore progress - tag "maha" to https://localhost:9201 - 3/5 indices done
@@ -251,9 +276,18 @@ orders                        ░░░░░░░░░░░░░░░░�
 ### 4. Delete-all (tear down a tag's resources)
 
 ```bash
-snapexe-oss delete-all --tag <tag> --dry-run     # 1. preview - ALWAYS do this first
-snapexe-oss delete-all --tag <tag>               # 2. after user confirms (prompts yes/no)
+# 1. preview - ALWAYS first; read the temp file silently, present the dry-run template, then get an explicit yes
+snapexe-oss delete-all --tag <tag> --dry-run > /tmp/snapexe-<tag>-delete.out 2>&1
+# 2. only after the user confirms in chat - that yes authorizes --yes (the interactive prompt can't be
+#    answered once output is redirected)
+snapexe-oss delete-all --tag <tag> --yes > /tmp/snapexe-<tag>-delete.out 2>&1
 ```
+**Same output discipline as the other commands:** one command per step, no visible pre-flight, redirect to
+the temp file, read it with the Read tool, and present only the dry-run preview / deleted templates above -
+never the raw INFO/AWS lines. Don't run separate verification commands (`aws s3 ls`, `aws iam get-user`,
+`ls <config>`, `curl _snapshot`) to confirm the teardown - the tool's own output, and its idempotent
+re-run, already confirm it.
+
 Deletes the repository's snapshots, deregisters the repo (on the config's endpoint), empties + deletes
 the S3 bucket, deletes the IAM user (keys + inline policy), and removes the config file. It is
 idempotent and keeps the config file if any step fails so it can be re-run. Note: it deregisters the

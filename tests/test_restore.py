@@ -588,3 +588,50 @@ def test_remap_searchable_snapshots_no_remaps_is_noop():
     assert restore.remap_searchable_snapshots(
         [], MagicMock(), "https://t:9201", [], existing_indices=[], boto3_module=MagicMock(),
     ) is True
+
+
+def test_compute_recovery_progress_aggregates_and_filters():
+    rows = [
+        {"index": "logs", "stage": "done", "bytes_percent": "100.0%"},
+        {"index": "users", "stage": "index", "bytes_percent": "60.0%"},
+        {"index": ".opendistro_security", "stage": "done", "bytes_percent": "100.0%"},   # system - skip
+        {"index": ".plugins-ml-config", "stage": "done", "bytes_percent": "100.0%"},     # system - skip
+        {"index": ".ds-logs-datastream-000001", "stage": "done", "bytes_percent": "100.0%"},
+        {"index": ".ds-logs-datastream-000002", "stage": "index", "bytes_percent": "40.0%"},  # rolls up, min wins
+        {"index": "orders", "stage": "init", "bytes_percent": "0.0%"},
+    ]
+    p = restore.compute_recovery_progress(rows)
+    by = {i["name"]: i for i in p["indices"]}
+    assert set(by) == {"logs", "users", "logs-datastream", "orders"}   # system indices excluded
+    assert by["logs"]["state"] == "done" and by["logs"]["percent"] == 100
+    assert by["users"]["state"] == "recovering" and by["users"]["percent"] == 60
+    assert by["logs-datastream"]["percent"] == 40 and by["logs-datastream"]["state"] == "recovering"  # min across backing
+    assert by["orders"]["state"] == "pending" and by["orders"]["percent"] == 0
+    assert p["done"] == 1 and p["total"] == 4
+
+
+def test_run_restore_progress_reports_and_skips_system(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _write_creds(tmp_path, {"opensearch_dest": {"username": "admin", "password": "secret"}})
+    session = MagicMock()
+    session.get.return_value = _json_response([
+        {"index": "bulk50k", "stage": "done", "bytes_percent": "100.0%"},
+        {"index": "users", "stage": "index", "bytes_percent": "50.0%"},
+        {"index": ".opendistro_security", "stage": "done", "bytes_percent": "100.0%"},
+        {"index": ".ds-logs-datastream-000001", "stage": "done", "bytes_percent": "100.0%"},
+    ])
+    args = _restore_args(endpoint="https://localhost:9201", tag="day1culture",
+                         secret_id=None, progress=True)
+    rc = restore.run_restore_progress(args, session_factory=lambda u, p: session)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "2/3 indices done" in out              # bulk50k + logs-datastream done, users recovering
+    assert "bulk50k" in out and "logs-datastream" in out
+    assert "users: 50%" in out
+    assert ".opendistro_security" not in out      # system index filtered out
+
+
+def test_parse_restore_progress_flag():
+    ns = restore.parse_arguments(["--tag", "d", "--endpoint", "https://h:9201", "--progress"])
+    assert ns.progress is True
+    assert ns.endpoint == "https://h:9201"

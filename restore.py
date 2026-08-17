@@ -18,6 +18,7 @@ container(s) via --dest-containers (defaults to --install-container).
 
 import argparse
 import logging
+import re
 import subprocess
 import sys
 import json
@@ -523,6 +524,90 @@ def _resolve_dest_containers(args):
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
+_DS_BACKING_RE = re.compile(r"^\.ds-(.+)-\d{6}$")
+
+
+def _recovery_display_name(index):
+    """Map a `.ds-<stream>-NNNNNN` backing index to its data-stream name; else the index itself."""
+    m = _DS_BACKING_RE.match(index)
+    return m.group(1) if m else index
+
+
+def _is_recovery_system_index(index):
+    """System / plugin indices to hide from restore progress. Dot-prefixed, but `.ds-*`
+    data-stream backing indices are real restored data, so they are NOT system."""
+    return index.startswith(".") and not index.startswith(".ds-")
+
+
+def compute_recovery_progress(rows):
+    """Aggregate `_cat/recovery` rows into per-index recovery progress.
+
+    rows: list of {"index", "stage", "bytes_percent"} dicts. Skips system indices, rolls
+    `.ds-*` backing indices up under their data-stream name, and takes the min percent across
+    an index's shards (`stage=done` counts as 100%). Returns
+    {indices: [{name, percent, state}], done, total} with state done/recovering/pending.
+    """
+    groups = {}
+    for row in rows:
+        index = row.get("index", "")
+        if not index or _is_recovery_system_index(index):
+            continue
+        name = _recovery_display_name(index)
+        stage = (row.get("stage") or "").lower()
+        raw = str(row.get("bytes_percent") or "0").rstrip("%")
+        try:
+            pct = 100.0 if stage == "done" else float(raw)
+        except ValueError:
+            pct = 0.0
+        groups[name] = min(groups.get(name, 100.0), pct)
+
+    indices = []
+    done = 0
+    for name in sorted(groups):
+        pct = groups[name]
+        if pct >= 100:
+            state = "done"
+            done += 1
+        elif pct <= 0:
+            state = "pending"
+        else:
+            state = "recovering"
+        indices.append({"name": name, "percent": round(pct), "state": state})
+    return {"indices": indices, "done": done, "total": len(indices)}
+
+
+def run_restore_progress(args, *, session_factory=create_session):
+    """Report recovery progress of a restore on the destination cluster (`restore --progress`).
+
+    Queries the dest's `_cat/recovery` (reads the opensearch_dest creds), filters out system
+    indices, rolls data-stream backing indices up by name, and prints per-index recovery.
+    """
+    try:
+        creds = load_creds(getattr(args, "secret_id", None), args.creds_file)
+        username, password = resolve_credentials(creds, "opensearch_dest")
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error(str(exc))
+        return 2
+
+    endpoint = normalize_endpoint(args.endpoint)
+    session = session_factory(username, password)
+    url = urljoin(
+        endpoint + "/",
+        "_cat/recovery?active_only=false&format=json&h=index,stage,bytes_percent",
+    )
+    resp = session.get(url, verify=False, timeout=30)
+    if resp.status_code != 200:
+        logger.error("Failed to get recovery status: %s %s", resp.status_code, resp.text)
+        return 1
+
+    progress = compute_recovery_progress(resp.json())
+    label = f' - tag "{args.tag}"' if getattr(args, "tag", None) else ""
+    print(f"\nRestore progress{label}: {endpoint} - {progress['done']}/{progress['total']} indices done")
+    for idx in progress["indices"]:
+        print(f"  - {idx['name']}: {idx['percent']}% {idx['state']}")
+    return 0
+
+
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(
         description="Restore an open-source OpenSearch snapshot into a target cluster."
@@ -540,6 +625,8 @@ def parse_arguments(argv=None):
     parser.add_argument("--dest-containers", dest="dest_containers",
                         help="Comma-separated destination containers for searchable-snapshot "
                              "remaps (Approach A). Defaults to --install-container.")
+    parser.add_argument("--progress", action="store_true",
+                        help="Report recovery progress on --endpoint (the destination) instead of restoring")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
@@ -551,6 +638,8 @@ def main(argv=None):
         level=logging.DEBUG if getattr(args, "debug", False) else logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
+    if getattr(args, "progress", False):
+        return run_restore_progress(args)
     return run_restore(args)
 
 

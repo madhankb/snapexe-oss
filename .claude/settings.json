@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python opensearch_snapshot.py:*)",
+      "Bash(.venv/bin/python restore.py:*)",
+      "Bash(.venv/bin/python delete_all.py:*)",
+      "Bash(snapexe-oss:*)"
+    ]
+  }
+}
